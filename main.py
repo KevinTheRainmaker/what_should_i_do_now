@@ -92,20 +92,20 @@ async def lifespan(app: FastAPI):
     # 시작 시 환경변수 검증
     try:
         validate_env()
-        print("✅ Environment variables validated successfully")
+        logger.info("Environment variables validated successfully")
     except ValueError as e:
-        print(f"❌ Environment validation failed: {e}")
+        logger.error(f"Environment validation failed: {e}")
         # 개발 환경에서는 경고만 출력
         if os.getenv("APP_ENV") != "development":
             raise
     
     # 앱 시작 시 현재 설정 출력
-    print(f"🚀 앱 시작 시 설정: {app_config}")
+    logger.info(f"앱 시작 시 설정: {app_config}")
     
     yield
     
     # 종료 시 정리 작업
-    print("Application shutting down...")
+    logger.info("Application shutting down...")
 
 
 # FastAPI 앱 생성
@@ -190,10 +190,8 @@ async def recommend_activities_stream(request: RecommendRequest):
         result = None
         
         try:
-            print("=================================")
-            print("[Gap-time Companion Agent 시작]")
-            print("=================================")
-            print(f"요청: {request.preferences.time_bucket}, {request.preferences.budget_level}, {[t.value for t in request.preferences.themes]}")
+            logger.info("[Gap-time Companion Agent 시작]")
+            logger.info(f"요청: {request.preferences.time_bucket}, {request.preferences.budget_level}, {[t.value for t in request.preferences.themes]}")
             
             # 초기 상태 구성
             initial_state = {
@@ -203,7 +201,7 @@ async def recommend_activities_stream(request: RecommendRequest):
             }
             
             # LangGraph 이벤트 스트리밍
-            print("\nLangGraph 워크플로우 실행 중 (스트리밍)...")
+            logger.info("LangGraph 워크플로우 실행 중 (스트리밍)...")
             
             async for event in companion_graph.astream_events(initial_state, version="v2"):
                 event_type = event.get("event")
@@ -232,7 +230,7 @@ async def recommend_activities_stream(request: RecommendRequest):
             
             # 최종 결과가 없으면 전체 그래프 실행 결과 가져오기
             if not result:
-                print("   ⚠️ 이벤트에서 최종 결과를 찾을 수 없음 - 전체 실행으로 대체")
+                logger.warning("이벤트에서 최종 결과를 찾을 수 없음 - 전체 실행으로 대체")
                 result = await companion_graph.ainvoke(initial_state)
             
             # 최종 결과 전송
@@ -240,16 +238,12 @@ async def recommend_activities_stream(request: RecommendRequest):
                 end_time = time.time()
                 latency_ms = int((end_time - start_time) * 1000)
                 
-                print("=================================")
-                print("[최종 결과 요약]")
-                print("=================================")
-                print(f"총 소요시간: {latency_ms}ms")
-                print(f"검색 통계: {result.get('source_stats', {})}")
-                print(f"폴백 사용: {'예' if result.get('fallback_used', False) else '아니오'}")
-                print(f"최종 추천: {len(result['ranked_items'])}개")
+                logger.info(f"총 소요시간: {latency_ms}ms")
+                logger.info(f"검색 통계: {result.get('source_stats', {})}")
+                logger.info(f"폴백 사용: {'예' if result.get('fallback_used', False) else '아니오'}")
+                logger.info(f"최종 추천: {len(result['ranked_items'])}개")
                 for i, item in enumerate(result['ranked_items'], 1):
-                    print(f"   {i}. {item.name} ({item.total_score:.1f}점)")
-                print("=================================\n")
+                    logger.info(f"   {i}. {item.name} ({item.total_score:.1f}점)")
                 
                 # LLM 평가 결과가 있으면 사용, 없으면 기본 결과 사용
                 final_items = result.get("llm_selected_items", result["ranked_items"])
@@ -292,11 +286,11 @@ async def recommend_activities_stream(request: RecommendRequest):
                 "traceback": traceback.format_exc()
             }
             
-            print(f"❌ CRITICAL ERROR in recommend_activities_stream:")
-            print(f"   Error Type: {error_details['error_type']}")
-            print(f"   Error Message: {error_details['error_message']}")
-            print(f"   Full Traceback:")
-            print(error_details['traceback'])
+            logger.error(f"CRITICAL ERROR in recommend_activities_stream:")
+            logger.error(f"   Error Type: {error_details['error_type']}")
+            logger.error(f"   Error Message: {error_details['error_message']}")
+            logger.error(f"   Full Traceback:")
+            logger.error(error_details['traceback'])
             
             try:
                 yield f"data: {json.dumps({'type': 'error', 'message': '추천을 생성하는 중 오류가 발생했습니다.', 'error_type': error_details['error_type']})}\n\n"
@@ -320,10 +314,8 @@ async def recommend_activities(request: RecommendRequest):
     start_time = time.time()
     
     try:
-        print("=================================")
-        print("[Gap-time Companion Agent 시작]")
-        print("=================================")
-        print(f"요청: {request.preferences.time_bucket}, {request.preferences.budget_level}, {[t.value for t in request.preferences.themes]}")
+        logger.info("[Gap-time Companion Agent 시작]")
+        logger.info(f"요청: {request.preferences.time_bucket}, {request.preferences.budget_level}, {[t.value for t in request.preferences.themes]}")
         
         # 초기 상태 구성
         initial_state = {
@@ -333,23 +325,19 @@ async def recommend_activities(request: RecommendRequest):
         }
         
         # LangGraph 실행
-        print("\nLangGraph 워크플로우 실행 중...")
+        logger.info("LangGraph 워크플로우 실행 중...")
         result = await companion_graph.ainvoke(initial_state)
         
         # 응답 생성
         end_time = time.time()
         latency_ms = int((end_time - start_time) * 1000)
         
-        print("=================================")
-        print("[최종 결과 요약]")
-        print("=================================")
-        print(f"총 소요시간: {latency_ms}ms")
-        print(f"검색 통계: {result.get('source_stats', {})}")
-        print(f"폴백 사용: {'예' if result.get('fallback_used', False) else '아니오'}")
-        print(f"최종 추천: {len(result['ranked_items'])}개")
+        logger.info(f"총 소요시간: {latency_ms}ms")
+        logger.info(f"검색 통계: {result.get('source_stats', {})}")
+        logger.info(f"폴백 사용: {'예' if result.get('fallback_used', False) else '아니오'}")
+        logger.info(f"최종 추천: {len(result['ranked_items'])}개")
         for i, item in enumerate(result['ranked_items'], 1):
-            print(f"   {i}. {item.name} ({item.total_score:.1f}점)")
-        print("=================================\n")
+            logger.info(f"   {i}. {item.name} ({item.total_score:.1f}점)")
         
         # LLM 평가 결과가 있으면 사용, 없으면 기본 결과 사용
         final_items = result.get("llm_selected_items", result["ranked_items"])
@@ -377,11 +365,11 @@ async def recommend_activities(request: RecommendRequest):
             "traceback": traceback.format_exc()
         }
         
-        print(f"❌ CRITICAL ERROR in recommend_activities:")
-        print(f"   Error Type: {error_details['error_type']}")
-        print(f"   Error Message: {error_details['error_message']}")
-        print(f"   Full Traceback:")
-        print(error_details['traceback'])
+        logger.error(f"CRITICAL ERROR in recommend_activities:")
+        logger.error(f"   Error Type: {error_details['error_type']}")
+        logger.error(f"   Error Message: {error_details['error_message']}")
+        logger.error(f"   Full Traceback:")
+        logger.error(error_details['traceback'])
         
         # 사용자에게는 간단한 메시지, 개발자에게는 상세 정보
         raise HTTPException(
@@ -939,9 +927,9 @@ async def get_recommendations_from_questions(session_id: str):
             "traceback": traceback.format_exc()
         }
         
-        print(f"❌ CRITICAL ERROR in get_recommendations_from_questions:")
-        print(f"   Error Type: {error_details['error_type']}")
-        print(f"   Error Message: {error_details['error_message']}")
+        logger.error(f"CRITICAL ERROR in get_recommendations_from_questions:")
+        logger.error(f"   Error Type: {error_details['error_type']}")
+        logger.error(f"   Error Message: {error_details['error_message']}")
         
         raise HTTPException(
             status_code=500,
@@ -990,8 +978,8 @@ async def serve_ui():
     temp = int(os.getenv("APP_TEMP", str(app_config["temp"])))
     weather = os.getenv("APP_WEATHER", format_weather_display(weather_condition, temp))
 
-    print(f"📍 위치: {location}")
-    print(f"🌤️ 날씨: {weather}")
+    logger.info(f"위치: {location}")
+    logger.info(f"날씨: {weather}")
 
     # static/index.html 파일 읽기
     try:
@@ -1062,8 +1050,8 @@ if __name__ == "__main__":
     os.environ["APP_LAT"] = str(args.lat)
     os.environ["APP_LNG"] = str(args.lng)
     
-    print(f"DEBUG: app_config 업데이트 후 = {app_config}")
-    print(f"DEBUG: 환경 변수 설정 완료")
+    # print(f"DEBUG: app_config 업데이트 후 = {app_config}")
+    # print(f"DEBUG: 환경 변수 설정 완료")
     
     # config.py의 DEFAULT_CONTEXT 업데이트
     update_default_context(
@@ -1074,10 +1062,10 @@ if __name__ == "__main__":
         temp_c=args.temp
     )
     
-    print(f"🌍 위치: {CURRENT_LOCATION}")
-    print(f"📍 좌표: {CURRENT_COORDS['lat']}, {CURRENT_COORDS['lng']}")
-    print(f"🌤️ 날씨: {CURRENT_WEATHER_CONDITION} {CURRENT_TEMP}°C")
-    print(f"🌐 서버: {args.host}:{args.port}")
+    logger.info(f"위치: {CURRENT_LOCATION}")
+    logger.info(f"좌표: {CURRENT_COORDS['lat']}, {CURRENT_COORDS['lng']}")
+    logger.info(f"날씨: {CURRENT_WEATHER_CONDITION} {CURRENT_TEMP}°C")
+    logger.info(f"서버: {args.host}:{args.port}")
     
     uvicorn.run(
         "main:app", 
