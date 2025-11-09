@@ -1,0 +1,1061 @@
+project:
+  name: Gap-time Companion Agent (MVP) — Barcelona Mobile Web
+  description: Next.js 14(App Router, TS) 기반의 모바일 웹 MVP로, 사용자의 남는 시간/예산/테마를 입력 받아 바르셀로나 중심 기준으로 장소/활동을 검색(SerpAPI, Bing)하고
+    정규화·랭킹 후 상위 4개 카드를 한국어로 제시합니다. Edge Runtime 우선, Supabase 이벤트 로깅, 캐시 및 간단한 레이트리밋을 포함합니다. 목표 SLA는 서버 처리 3s 이내, 항상 최소
+    1개 추천(폴백 포함) 보장입니다.
+tasks:
+  - id: setup-env-config
+    title: 환경변수 및 공용 설정 구성
+    priority: P0
+    description: 프로젝트 환경변수와 공용 상수/설정을 정의합니다. 서버 전용 키(Supabase Service Role, SerpAPI, Bing)는 서버 환경에서만 접근되도록 하고, Edge 우선 실행을
+      고려한 안전한 접근 방식을 적용합니다.
+    files:
+      - path: .env.example
+        description: 필수 환경변수 키 템플릿 제공 (SERPAPI_KEY, BING_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, NEXT_PUBLIC_APP_ENV)
+        type: create
+      - path: lib/config.ts
+        description: "전역 상수 및 설정: DEFAULT_CONTEXT, TIME_BUCKET_LIMITS, CATEGORY_DEFAULTS, PROVIDER_TIMEOUTS, CACHE_TTL,
+          RATE_LIMITS, API_URLS 등"
+        type: create
+      - path: lib/errors.ts
+        description: "에러 코드/타입 매핑: INVALID_INPUT, UPSTREAM_TIMEOUT, PROVIDER_ERROR, INTERNAL_ERROR 및 공용 Error 객체 정의"
+        type: create
+    subtasks:
+      - id: setup-env-validate
+        title: .env 유효성 검사 로직
+        description: 서버 기동 시 필수 키 존재 확인. 누락 시 의미 있는 에러 메시지로 실패 처리(클라이언트로는 은닉).
+        category: setup
+        implementation_notes:
+          - Edge/Node 모두 process.env 안전 접근
+          - 클라이언트 빌드에 서버 키 누출 금지
+      - id: setup-constants
+        title: config.ts 상수 정의
+        description: 시간버킷 한계, 카테고리별 대기/체류 기본값, 프로바이더 타임아웃, 캐시 TTL, 레이트리밋 파라미터 등 결정론적 상수 정의.
+        category: setup
+        implementation_notes:
+          - 숫자 단위(ms, m, min) 일관
+          - 테스트에서 주입 가능하도록 export
+    completion_criteria:
+      - .env.example에 모든 키 항목 포함
+      - config.ts에서 DEFAULT_CONTEXT 등 상수 제공
+      - 빌드 시 서버 전용 키가 클라이언트 번들에 포함되지 않음
+    risks:
+      - risk: 환경변수 누락으로 런타임 실패
+        mitigation: 부트 시 검증 및 명확한 로그 출력
+      - risk: 서버 키가 클라이언트로 노출
+        mitigation: 전역 상수 분리, NEXT_PUBLIC 접두사 키만 클라이언트 사용
+    order: 1
+  - id: setup-styles-tailwind
+    title: Tailwind/글로벌 스타일 설정
+    priority: P0
+    description: Tailwind CSS와 Headless UI를 위한 기본 스타일 파이프라인을 구성하고 모바일 퍼스트 설정을 적용합니다.
+    files:
+      - path: styles/globals.css
+        description: Tailwind 지시어(@tailwind base/components/utilities)와 기본 리셋/폰트 설정
+        type: create
+      - path: tailwind.config.js
+        description: Tailwind 설정(경로 스캔, 테마 프리셋)
+        type: create
+      - path: postcss.config.js
+        description: PostCSS 플러그인 구성
+        type: create
+    subtasks:
+      - id: setup-tailwind-scan
+        title: Tailwind 스캔 경로 지정
+        description: app/**/*, components/**/*, lib/**/* 스캔
+        category: setup
+        implementation_notes:
+          - JIT 기본 사용
+      - id: setup-mobile-ux
+        title: 모바일 터치 타겟 및 접근성 기본
+        description: 버튼/리스트 아이템 최소 44px, 포커스 링, ARIA 라벨 기본 스타일
+        category: ui
+        implementation_notes:
+          - " prefers-reduced-motion 고려"
+    dependencies:
+      - setup-env-config
+    completion_criteria:
+      - Tailwind 클래스 적용된 기본 페이지 렌더
+      - 모바일 터치타겟 규격 만족(44px 이상)
+    risks:
+      - risk: 스타일 스코프 누락 또는 CLS 발생
+        mitigation: 글로벌 reset 명시, 스켈레톤 고정 높이
+    order: 2
+  - id: types-models
+    title: 타입 스키마 정의(Activity/Telemetry/Requests)
+    priority: P0
+    description: 런타임/컴파일타임 일관성을 위해 타입 정의 파일을 분리합니다.
+    files:
+      - path: types/activity.ts
+        description: ActivityItem, Preferences, Context 타입 정의
+        type: create
+      - path: types/telemetry.ts
+        description: telemetry 이벤트 타입/페이로드 정의
+        type: create
+      - path: types/requests.ts
+        description: API Request/Response 스키마 타입 정의
+        type: create
+    subtasks:
+      - id: types-activityitem
+        title: ActivityItem 필드 정의
+        description: TRD의 ActivityItem 사양을 모두 포함하고 null/unknown 처리 명시.
+        category: data
+        implementation_notes:
+          - 좌표, 거리, 시간 필드 단위 명확화
+      - id: types-api-io
+        title: API I/O 타입
+        description: POST /api/recommend의 Req/Res, GET /api/health 응답 타입 정의.
+        category: api
+        implementation_notes:
+          - 에러 코드 유니온 타입 포함
+    dependencies:
+      - setup-env-config
+    completion_criteria:
+      - 타입 빌드 에러 없음
+      - lib/* 모듈에서 타입 임포트 사용
+    risks:
+      - risk: 타입-구현 불일치
+        mitigation: 단위 테스트에서 샘플 객체로 타입 체크
+    order: 3
+  - id: data-assets
+    title: 데이터 자산 구성(폴백/카테고리)
+    priority: P0
+    description: 폴백 추천 카탈로그와 카테고리/태그 매핑 리소스를 준비합니다.
+    files:
+      - path: data/fallback_catalog.json
+        description: 바르셀로나 제로데이터 추천 후보. 필수 필드 포함.
+        type: create
+      - path: data/categories.json
+        description: 키워드→카테고리/실내외/체인 여부 매핑 룰
+        type: create
+    subtasks:
+      - id: data-fallback-fill
+        title: 폴백 항목 작성
+        description: 최소 6~10개 이상 작성, 좌표/링크/한국어 reasonText 포함.
+        category: data
+        implementation_notes:
+          - 현지 명칭 병기 허용
+      - id: data-categories-rules
+        title: 카테고리 매핑 룰
+        description: TRD 25항 규칙 반영, 체인 키워드 포함.
+        category: data
+        implementation_notes:
+          - unknown 처리 분기 포함
+    dependencies:
+      - types-models
+    completion_criteria:
+      - 폴백 데이터로 최소 1개 이상 추천 가능
+      - 카테고리 매핑 룰 파일 로딩 성공
+    risks:
+      - risk: 폴백 품질 저하
+        mitigation: 거리/날씨/테마 가중치로 보정
+    order: 4
+  - id: lib-context
+    title: 컨텍스트 초기화(context.ts)
+    priority: P0
+    description: DEFAULT_CONTEXT 기반 서버 시각/사전 날씨/좌표를 로드하고 override 병합.
+    files:
+      - path: lib/context.ts
+        description: Context 로딩/병합/검증 유틸
+        type: create
+    subtasks:
+      - id: context-default
+        title: 기본값 반환
+        description: Plaça de Catalunya 좌표/날씨/시간 반환
+        category: core
+        implementation_notes:
+          - 서버 시각 ISO 사용
+      - id: context-override-merge
+        title: override 병합
+        description: 부분 필드 적용 및 안전 검증
+        category: core
+        implementation_notes:
+          - 누락 시 기본 유지
+    dependencies:
+      - setup-env-config
+      - types-models
+    completion_criteria:
+      - 페이지 로드시 Context 생성 성공
+      - 오류 시 기본값 폴백 동작
+    risks:
+      - risk: 시간대/로캘 포맷 혼선
+        mitigation: ISO8601 고정 사용
+    order: 5
+  - id: lib-classifier
+    title: 시간 버킷/적합도 계산(classifier.ts)
+    priority: P0
+    description: 도보 속도 80m/min, travel/wait/duration 합산 및 버킷 적합도 계산 함수 제공.
+    files:
+      - path: lib/classifier.ts
+        description: travelTimeMin, expectedWaitMin, expectedDurationMin, total 계산 및 적합도 판정
+        type: create
+    subtasks:
+      - id: classifier-travel
+        title: 거리→도보 시간
+        description: Haversine 거리→m→min(최소 3분)
+        category: core
+        implementation_notes:
+          - 좌표 없으면 보수적 값 사용
+      - id: classifier-total
+        title: 총 시간/버킷 적합도
+        description: 버킷 상한 초과 패널티 로직 포함
+        category: core
+        implementation_notes:
+          - ">120은 상한 없음"
+    dependencies:
+      - lib-context
+      - types-models
+      - lib-maps
+    completion_criteria:
+      - 시간 초과 추천 비율 ≤ 10% 단위 테스트 충족
+    risks:
+      - risk: 좌표 누락 시 과소/과대 추정
+        mitigation: 보수적 기본치 적용 및 점수 함수에서 보정
+    order: 6
+  - id: lib-query
+    title: 검색 쿼리 생성(query.ts)
+    priority: P0
+    description: Preferences/Context 입력을 바탕으로 2~5개 QuerySpec 생성. 테마/예산 키워드, 반경, 로캘 포함.
+    files:
+      - path: lib/query.ts
+        description: QuerySpec 생성기 및 키워드 매핑 구현
+        type: create
+    subtasks:
+      - id: query-theme-map
+        title: 테마 매핑
+        description: TRD 규칙에 따른 키워드 세트 생성
+        category: core
+        implementation_notes:
+          - es-ES/ca-ES/en 혼합 2~3개
+      - id: query-radius
+        title: 시간 버킷→반경
+        description: 버킷별 반경 매핑 적용
+        category: core
+        implementation_notes:
+          - ≤30:800m, 30-60:1500m, 60-120:3000m, >120:5000m
+    dependencies:
+      - lib-context
+      - types-models
+      - setup-env-config
+    completion_criteria:
+      - 세션당 ≥2개 쿼리 생성
+      - 키워드에 테마/예산/시간 반영 확인
+    risks:
+      - risk: 키워드 과도 일반성으로 잡음 증가
+        mitigation: 혼합 언어/구체 키워드 조합 2~3개 생성
+    order: 7
+  - id: lib-maps
+    title: 길찾기 링크 유틸(maps.ts)
+    priority: P0
+    description: 좌표 유무에 따라 Google Maps Directions 링크를 생성합니다.
+    files:
+      - path: lib/maps.ts
+        description: destination=lat,lng 또는 검색어 기반 링크 생성
+        type: create
+    subtasks:
+      - id: maps-latlng
+        title: 좌표 기반 링크
+        description: api=1&destination=lat,lng
+        category: core
+        implementation_notes:
+          - 소수점 6자리 고정
+      - id: maps-name-fallback
+        title: 이름 기반 링크
+        description: 좌표 없는 경우 'name Barcelona' 인코딩
+        category: core
+        implementation_notes:
+          - 공백/특수문자 인코딩
+    dependencies:
+      - types-models
+    completion_criteria:
+      - 좌표/이름 케이스 모두 링크 정상 동작
+    risks:
+      - risk: 잘못된 인코딩으로 링크 실패
+        mitigation: 표준 URL 인코딩 및 단위 테스트
+    order: 8
+  - id: lib-providers-serpapi
+    title: SerpAPI 프로바이더 구현
+    priority: P0
+    description: SerpAPI(Google Maps) 호출, 타임아웃 1.8s, 쿼리당 최대 10개 결과 수집. 실패 시 즉시 반환.
+    files:
+      - path: lib/providers/serpapi.ts
+        description: fetch 호출, 파라미터 구성, 결과 파싱(원시)
+        type: create
+    subtasks:
+      - id: serpapi-request
+        title: 요청 구성/타임아웃
+        description: AbortController/시간 예산 파라미터 적용
+        category: api
+        implementation_notes:
+          - engine=google_maps, ll, q 포함
+      - id: serpapi-parse
+        title: 필드 추출
+        description: title,rating,reviews,type,gps_coordinates,open_state,links 추출
+        category: data
+        implementation_notes:
+          - 최대 10개 제한
+    dependencies:
+      - lib-query
+      - setup-env-config
+    completion_criteria:
+      - 정상 응답에서 최대 10개 원시 아이템 획득
+      - 1.8s 초과 시 타임아웃 에러 반환
+    risks:
+      - risk: 외부 API 지연/쿼터 초과
+        mitigation: 타임아웃 엄수 및 Bing 폴백 트리거
+    order: 9
+  - id: lib-providers-bing
+    title: Bing Web Search 폴백 프로바이더 구현
+    priority: P0
+    description: SerpAPI 실패/부족 시 Bing 호출. 타임아웃 1.2s, 상위 최대 10개 결과 파싱.
+    files:
+      - path: lib/providers/bing.ts
+        description: fetch 호출 및 결과 파싱(원시)
+        type: create
+    subtasks:
+      - id: bing-request
+        title: 요청/헤더/타임아웃
+        description: Ocp-Apim-Subscription-Key 헤더 사용, 타임아웃 1.2s
+        category: api
+        implementation_notes:
+          - 지도/장소 도메인 우선 키워드
+      - id: bing-parse
+        title: 필드 추출
+        description: name,url,snippet,isFamilyFriendly 등 추출
+        category: data
+        implementation_notes:
+          - 장소 비관련 결과 필터
+    dependencies:
+      - lib-query
+      - setup-env-config
+    completion_criteria:
+      - Bing에서 최대 10개 원시 결과 확보
+      - SerpAPI 부족 시 보조로 합산
+    risks:
+      - risk: 웹 결과 잡음
+        mitigation: 정규화 단계에서 도메인/키워드 필터 강화
+    order: 10
+  - id: lib-normalize
+    title: 검색 결과 정규화(normalize.ts)
+    priority: P0
+    description: 원시 결과를 ActivityItem으로 매핑. 카테고리/가격/좌표/거리/영업여부/실내외 등을 보정합니다.
+    files:
+      - path: lib/normalize.ts
+        description: SerpAPI/Bing 공통 정규화 파이프라인
+        type: create
+    subtasks:
+      - id: normalize-category
+        title: 카테고리/실내외 매핑
+        description: categories.json 기반 키워드 매핑
+        category: data
+        implementation_notes:
+          - unknown 처리 포함
+      - id: normalize-geo
+        title: 좌표/거리/도보시간 계산
+        description: Context.coords 기준 거리/분 계산
+        category: data
+        implementation_notes:
+          - Haversine 사용
+      - id: normalize-price
+        title: 가격 레벨 추정
+        description: €,€€,€€€ 또는 텍스트 힌트→low/mid/high
+        category: data
+        implementation_notes:
+          - 없으면 unknown
+    dependencies:
+      - data-assets
+      - lib-context
+      - lib-classifier
+      - types-models
+      - lib-maps
+    completion_criteria:
+      - 각 아이템 핵심 속성 ≥5개 채움
+      - 영업 종료 후보 점수 패널티 플래그 부여
+    risks:
+      - risk: 잘못된 카테고리 매핑
+        mitigation: 키워드 사전 확장/테스트 케이스 추가
+    order: 11
+  - id: lib-ranker
+    title: 랭킹/제약 적용(ranker.ts)
+    priority: P0
+    description: 점수(0~100) 계산, 제약(체인 중복 금지, 야간 안전, openNow 패널티) 적용 후 상위 4개 선별.
+    files:
+      - path: lib/ranker.ts
+        description: distance/timeFit/budget/rating/weather/theme/localVibe 점수 및 후처리 구현
+        type: create
+    subtasks:
+      - id: ranker-scoring
+        title: 점수 함수 구현
+        description: TRD 정의 공식에 따른 점수 합산
+        category: core
+        implementation_notes:
+          - 좌표없음/평점null 기본점수 반영
+      - id: ranker-constraints
+        title: 제약/후처리
+        description: 체인 중복 금지, openNow=false 패널티, 야간 안전 규칙
+        category: core
+        implementation_notes:
+          - 카테고리 다양성은 P1에서 강화
+    dependencies:
+      - lib-classifier
+      - lib-normalize
+      - types-models
+      - lib-context
+      - lib-config-alias
+    completion_criteria:
+      - 항상 최대 4개 반환(부족 시 폴백에서 보충 전 단계)
+      - 추천 이유 80자 이내 포맷 생성
+    risks:
+      - risk: 점수 튜닝 미흡으로 품질 저하
+        mitigation: 가중치 상수 분리 및 테스트 기반 조정
+    order: 12
+  - id: lib-fallback
+    title: 폴백 생성(fallback.ts)
+    priority: P0
+    description: fallback_catalog.json 기반 거리/날씨/테마 적합도 간단 점수화 후 1~N개 반환.
+    files:
+      - path: lib/fallback.ts
+        description: 폴백 스코어링/선별 및 ActivityItem 변환
+        type: create
+    subtasks:
+      - id: fallback-score
+        title: 폴백 점수
+        description: 거리+날씨+테마 가중 합산
+        category: core
+        implementation_notes:
+          - 항상 최소 1개 반환 보장
+    dependencies:
+      - data-assets
+      - lib-context
+      - types-models
+      - lib-maps
+    completion_criteria:
+      - 제로데이터 상황에서도 최소 1개 이상 제공
+    risks:
+      - risk: 폴백 편향으로 다양성 부족
+        mitigation: 테마/카테고리 균형 가중치 적용
+    order: 13
+  - id: lib-cache
+    title: 서버 캐시(cache.ts)
+    priority: P0
+    description: 쿼리 키(hash(q+radius+coords_bucket)) 기반 5분 TTL 메모리 캐시. 동일 세션 재요청 시 사용.
+    files:
+      - path: lib/cache.ts
+        description: get/set/has 및 TTL 만료 관리
+        type: create
+    subtasks:
+      - id: cache-key
+        title: 키 해시/버킷
+        description: coords를 버킷화하여 캐시 키 생성
+        category: core
+        implementation_notes:
+          - Edge 글로벌 스코프 Map 사용
+      - id: cache-ttl
+        title: TTL 만료
+        description: 엔트리 만료 스윕/지연 제거
+        category: core
+        implementation_notes:
+          - 성능 영향 최소화
+    dependencies:
+      - setup-env-config
+    completion_criteria:
+      - 캐시 적중 시 외부 호출 감소 확인(로그 기준)
+    risks:
+      - risk: Edge 인스턴스간 캐시 불일치
+        mitigation: 최대 TTL 5분, 기능상 영향 경미
+    order: 14
+  - id: lib-telemetry
+    title: 텔레메트리 로깅(telemetry.ts)
+    priority: P0
+    description: Supabase events 테이블로 session_start, input_submitted, results_shown, card_clicked, error 이벤트 비동기 로깅.
+    files:
+      - path: lib/telemetry.ts
+        description: 서버 전용 로깅 유틸 (fetch 기반, 비동기 fire-and-forget)
+        type: create
+    subtasks:
+      - id: telemetry-schema
+        title: 이벤트 스키마 매핑
+        description: 공통 필드(sessionId, ts, context, prefs, meta) 구조화
+        category: data
+        implementation_notes:
+          - 서비스 역할 키 서버 전용 사용
+      - id: telemetry-nonblocking
+        title: 논블로킹 로깅
+        description: 응답 경로 차단 금지, 실패 시 무시/샘플 로그
+        category: core
+        implementation_notes:
+          - Promise 처리 분리
+    dependencies:
+      - setup-env-config
+      - types-models
+    completion_criteria:
+      - API 응답과 무관하게 로깅 시도
+      - 실패해도 API SLA 영향 없음
+    risks:
+      - risk: Supabase Edge 호환성
+        mitigation: supabase-js 대신 fetch REST 사용
+    order: 15
+  - id: lib-templates-ko
+    title: 한국어 문구 템플릿/라벨
+    priority: P0
+    description: 카테고리/예산 라벨과 추천 이유(reasonText) 결정론적 템플릿 함수.
+    files:
+      - path: lib/i18n-ko.ts
+        description: 한국어 라벨 맵과 추천 이유 생성 유틸
+        type: create
+    subtasks:
+      - id: template-reason
+        title: 추천 이유 포맷
+        description: 도보분/카테고리/평점/예산/테마 80자 이내 생성
+        category: core
+        implementation_notes:
+          - 평점 없음=정보 없음
+    dependencies:
+      - types-models
+    completion_criteria:
+      - 모든 카드 텍스트 한국어 표기
+      - 길이 제한 충족
+    risks:
+      - risk: 과도 축약으로 정보 손실
+        mitigation: 우선순위 키 정보만 노출
+    order: 16
+  - id: api-recommend
+    title: 추천 파이프라인 API 구현(/api/recommend)
+    priority: P0
+    description: Edge 우선 실행. 입력 검증→컨텍스트 초기화→쿼리 생성→외부 검색 병렬 호출(SerpAPI 우선, Bing 폴백)→정규화→랭킹→폴백 보충→결과/메타/로깅 반환. 전체 목표 ≤3s.
+    files:
+      - path: app/api/recommend/route.ts
+        description: POST 핸들러, runtime='edge', 타임박스 orchestration, rate limit 적용, pino 로깅 연동
+        type: create
+    subtasks:
+      - id: recommend-validate
+        title: 입력 검증/에러 매핑
+        description: preferences/timeBucket/budget/themes 유효성 검사, INVALID_INPUT 응답
+        category: api
+        implementation_notes:
+          - types/requests.ts 사용
+      - id: recommend-orchestrate
+        title: 오케스트레이션
+        description: 2.4s 서치, 0.3s 정규화/랭킹, 0.2s 로깅 예산 관리
+        category: api
+        implementation_notes:
+          - Promise.any/AllSettled 활용, 부분 결과 우선
+      - id: recommend-fallback
+        title: 폴백 보충/4초 규칙
+        description: 시간 경과 시 폴백 우선 노출 플래그
+        category: api
+        implementation_notes:
+          - meta.fallbackUsed 설정
+      - id: recommend-logging
+        title: 테레메트리 기록
+        description: results_shown 이벤트 비동기 기록
+        category: api
+        implementation_notes:
+          - sourceStats 집계
+    dependencies:
+      - lib-context
+      - lib-query
+      - lib-providers-serpapi
+      - lib-providers-bing
+      - lib-normalize
+      - lib-ranker
+      - lib-fallback
+      - lib-cache
+      - lib-telemetry
+      - lib-templates-ko
+      - setup-logging
+      - security-rate-limit
+    completion_criteria:
+      - p95 응답 ≤3.5s, 평균 ≤3s
+      - 항상 최대 4개(부족 시 폴백 포함)
+      - meta.latencyMs/sourceStats/fallbackUsed 포함
+    risks:
+      - risk: 외부 API 타임아웃 누적로 SLA 초과
+        mitigation: 엄격한 타임아웃 및 부분 결과 즉시 사용
+    order: 17
+  - id: api-health
+    title: 헬스체크 API 구현(/api/health)
+    priority: P0
+    description: 간단한 상태/시각 반환.
+    files:
+      - path: app/api/health/route.ts
+        description: "GET 핸들러, status:'ok', time: ISO"
+        type: create
+    subtasks:
+      - id: health-edge
+        title: Edge 런타임 설정
+        description: runtime='edge' 선언
+        category: api
+        implementation_notes:
+          - 서버 시각 ISO
+    completion_criteria:
+      - 200 OK + JSON 응답
+    risks:
+      - risk: 없음
+        mitigation: 단순 엔드포인트
+    order: 18
+  - id: setup-logging
+    title: 서버 로깅(pino) 구성
+    priority: P0
+    description: 서버사이드에서 pino 로깅 유틸 구성. 요청-응답 상관ID, 성능 슬라이스, 에러 스택 은닉.
+    files:
+      - path: lib/logger.ts
+        description: pino 인스턴스/포맷터/레벨 설정
+        type: create
+    subtasks:
+      - id: logger-redaction
+        title: 민감정보 마스킹
+        description: env/API 키/토큰 은닉
+        category: deploy
+        implementation_notes:
+          - pino-redaction
+      - id: logger-metrics
+        title: 지연/타임아웃 로그
+        description: search/normalize/rank/telemetry 단계별 ms 기록
+        category: deploy
+        implementation_notes:
+          - latency 필드 명세 고정
+    dependencies:
+      - setup-env-config
+    completion_criteria:
+      - 추천 API 호출 시 단계별 지연 로그 출력
+      - 에러 로그에 내부 스택 미노출
+    risks:
+      - risk: 로그 과다로 비용 증가
+        mitigation: 레벨/샘플링 조정
+    order: 19
+  - id: security-rate-limit
+    title: 경량 레이트리밋(CORS same-origin)
+    priority: P0
+    description: IP+sessionId 기반 초당 3req 제한. Edge 글로벌 Map 기반, 초과 시 429 반환.
+    files:
+      - path: lib/rateLimit.ts
+        description: 키 계산/윈도우 카운팅/허용 여부 반환
+        type: create
+    subtasks:
+      - id: ratelimit-ip-session
+        title: 키 설계
+        description: 헤더/IP와 body.sessionId 조합
+        category: deploy
+        implementation_notes:
+          - 프록시 뒤 IP 추출 기본값
+      - id: ratelimit-apply
+        title: API 적용
+        description: recommend 라우트에서 선행 검사
+        category: api
+        implementation_notes:
+          - 429 응답 + Retry-After 헤더
+    dependencies:
+      - setup-env-config
+    completion_criteria:
+      - 단위 테스트로 초과 요청 차단 확인
+      - CORS same-origin 유지
+    risks:
+      - risk: Edge 인스턴스 분산으로 정확성 저하
+        mitigation: 보수적 제한, 기능상 영향 제한
+    order: 20
+  - id: ui-components
+    title: 핵심 UI 컴포넌트 구현
+    priority: P0
+    description: 입력 폼/결과 리스트/카드/스켈레톤/에러 상태 컴포넌트 구현. 접근성/모바일 반응형 포함.
+    files:
+      - path: app/(components)/PreferencesForm.tsx
+        description: 3문항 입력 컴포넌트
+        type: create
+      - path: app/(components)/ResultsList.tsx
+        description: 결과 리스트(Partial/Ready 상태)
+        type: create
+      - path: app/(components)/ActivityCard.tsx
+        description: "카드: 이름/카테고리/총소요/예산/평점/이유/길찾기"
+        type: create
+      - path: app/(components)/SkeletonCards.tsx
+        description: 로딩 스켈레톤
+        type: create
+      - path: app/(components)/ErrorState.tsx
+        description: 에러/재시도 UI
+        type: create
+    subtasks:
+      - id: ui-a11y
+        title: 접근성/한국어 라벨
+        description: ARIA/포커스 순서/라벨 한국어 적용
+        category: ui
+        implementation_notes:
+          - 터치타겟 ≥44px
+      - id: ui-skeleton
+        title: 스켈레톤 로딩
+        description: 최대 1.5s 표기
+        category: ui
+        implementation_notes:
+          - 고정 높이로 CLS 방지
+    dependencies:
+      - lib-templates-ko
+      - types-models
+    completion_criteria:
+      - 3탭 이내 입력 완료 가능
+      - 카드 필수 필드 모두 표시
+    risks:
+      - risk: 모바일 레이아웃 깨짐
+        mitigation: 유닛/스냅샷 테스트 및 실제 디바이스 확인
+    order: 21
+  - id: page-home
+    title: 홈 페이지(page.tsx) 통합
+    priority: P0
+    description: Idle/Loading/Partial/Ready/Error 상태 관리, /api/recommend 호출, 4초 폴백 규칙 반영.
+    files:
+      - path: app/page.tsx
+        description: 클라이언트 컴포넌트 상태 관리 및 UI 합성
+        type: create
+    subtasks:
+      - id: page-states
+        title: 결정론적 UI 상태
+        description: Idle→Loading→Partial/Ready→Error 상태 전이
+        category: ui
+        implementation_notes:
+          - 부분 결과 수용(옵션)
+      - id: page-fetch
+        title: API 연동/오류 처리
+        description: 타임아웃/네트워크 오류 메시지 처리
+        category: ui
+        implementation_notes:
+          - 재시도 버튼/동일 입력 사용
+    dependencies:
+      - ui-components
+      - api-recommend
+      - api-health
+    completion_criteria:
+      - 3초 이내 최소 1개 카드 노출(폴백 포함)
+      - 4초 경과 시 폴백 우선 노출
+    risks:
+      - risk: 네트워크 지연으로 UX 저하
+        mitigation: 가시적 진행상태/문구 노출
+    order: 22
+  - id: ui-i18n-accessibility
+    title: 텍스트/현지화/접근성 완비
+    priority: P0
+    description: 모든 UI 텍스트 한국어 표기, 현지 명칭 병기 허용, 키보드/스크린리더 접근성 보강.
+    files:
+      - path: app/(components)/ActivityCard.tsx
+        description: 카테고리/예산 한국어 라벨 적용
+        type: modify
+    subtasks:
+      - id: ui-aria
+        title: ARIA 레이블/롤
+        description: 폼 컨트롤/리스트/카드
+        category: ui
+        implementation_notes:
+          - role=list, listitem 적절 적용
+    dependencies:
+      - ui-components
+      - lib-templates-ko
+    completion_criteria:
+      - 모든 문구 한국어
+      - 접근성 점검 도구 경고 0개(심각)
+    risks:
+      - risk: 과도한 ARIA로 혼란
+        mitigation: 네이티브 역할 우선 사용
+    order: 23
+  - id: p0-tests
+    title: P0 단위/통합 테스트
+    priority: P0
+    description: 순수 함수 단위 테스트와 추천 API 통합 테스트(정상/부분 타임아웃/완전 타임아웃).
+    files:
+      - path: __tests__/classifier.test.ts
+        description: 버킷/시간 적합도
+        type: create
+      - path: __tests__/query.test.ts
+        description: 테마/예산/반경 반영
+        type: create
+      - path: __tests__/normalize.test.ts
+        description: 카테고리/가격/거리 계산
+        type: create
+      - path: __tests__/ranker.test.ts
+        description: 점수/제약
+        type: create
+      - path: __tests__/maps.test.ts
+        description: 길찾기 링크 생성
+        type: create
+      - path: __tests__/recommend.api.test.ts
+        description: "통합: 정상/타임아웃/폴백"
+        type: create
+    subtasks:
+      - id: tests-mocks
+        title: 외부 API 모킹
+        description: SerpAPI/Bing 모킹으로 시간 제어
+        category: test
+        implementation_notes:
+          - 타임아웃 시나리오 포함
+    dependencies:
+      - lib-*
+      - api-recommend
+      - api-health
+    completion_criteria:
+      - 모든 테스트 통과
+      - 시간 초과/폴백 흐름 검증
+    risks:
+      - risk: Edge 런타임 테스트 어려움
+        mitigation: 핵심 로직 라이브러리 분리/단위 테스트 집중
+    order: 24
+  - id: p1-diversity
+    title: 카테고리 다양성 강화(P1)
+    priority: P1
+    description: 상위 4개 내 동일 카테고리 최대 2개 제한 구현(랭커 후처리 확장).
+    files:
+      - path: lib/ranker.ts
+        description: 후처리 다양성 규칙 추가
+        type: modify
+    subtasks:
+      - id: diversity-constraint
+        title: 카테고리 제한 적용
+        description: 동일 카테고리 2개 초과 시 후순위 대체
+        category: core
+        implementation_notes:
+          - 체인 중복 금지는 유지
+    dependencies:
+      - lib-ranker
+    completion_criteria:
+      - 상위 4개 내 동일 카테고리 3개 이상 금지 검증
+    risks:
+      - risk: 품질 저하(좋은 후보 배제)
+        mitigation: 점수 차이 임계값 이하일 때만 대체
+    order: 25
+  - id: p1-session-persist
+    title: 세션 내 입력 유지(P1)
+    priority: P1
+    description: 새로고침 시 폼 상태 유지(localStorage).
+    files:
+      - path: app/(components)/PreferencesForm.tsx
+        description: 상태 초기화 로직/저장 로직 추가
+        type: modify
+    subtasks:
+      - id: persist-local
+        title: 로컬 스토리지
+        description: 입력 변경 시 저장/로드
+        category: ui
+        implementation_notes:
+          - 유효성 검증 후 반영
+    dependencies:
+      - ui-components
+    completion_criteria:
+      - 새로고침 후 이전 입력 복원
+    risks:
+      - risk: 오래된 값으로 오작동
+        mitigation: 버전 키/만료시간 적용
+    order: 26
+  - id: p1-local-vibe-ui
+    title: 현지 감성 배지/문구 노출(P1)
+    priority: P1
+    description: 체인 여부/로컬 바이브 표시 뱃지 추가.
+    files:
+      - path: app/(components)/ActivityCard.tsx
+        description: 로컬 감성 배지 렌더
+        type: modify
+    subtasks:
+      - id: badge-display
+        title: 뱃지 렌더링
+        description: chain=false인 경우 로컬 감성 강조
+        category: ui
+        implementation_notes:
+          - 아이콘/텍스트 배지
+    dependencies:
+      - lib-normalize
+      - ui-components
+    completion_criteria:
+      - 체인/비체인 뚜렷한 구분 표시
+    risks:
+      - risk: 과도한 시각 노이즈
+        mitigation: 중립 색상/작은 배지
+    order: 27
+  - id: p2-themes-extend
+    title: 테마 확장(P2)
+    priority: P2
+    description: 예술/건축 산책/해변 루트 등 테마 추가.
+    files:
+      - path: data/categories.json
+        description: 추가 키워드/매핑 반영
+        type: modify
+      - path: lib/query.ts
+        description: 테마 키워드 확장
+        type: modify
+    subtasks:
+      - id: extend-keywords
+        title: 키워드 추가
+        description: 혼잡/잡음 최소화 고려
+        category: core
+        implementation_notes:
+          - 테스트 케이스 추가
+    dependencies:
+      - data-assets
+      - lib-query
+    completion_criteria:
+      - 확장 테마 입력 시 유효 쿼리 생성
+    risks:
+      - risk: 검색 잡음 증가
+        mitigation: 정규화 필터 강화
+    order: 28
+  - id: p2-favorites-recent
+    title: 즐겨찾기/최근 본 항목(P2)
+    priority: P2
+    description: 클라이언트 로컬 저장소로 즐겨찾기/최근 본 카드 저장/표시.
+    files:
+      - path: app/(components)/ResultsList.tsx
+        description: 즐겨찾기 토글 UI/최근 본 섹션
+        type: modify
+    subtasks:
+      - id: favorites-local
+        title: 즐겨찾기 저장
+        description: localStorage 기반 보관
+        category: ui
+        implementation_notes:
+          - 아이템 ID 기반 키 저장
+    dependencies:
+      - ui-components
+    completion_criteria:
+      - 즐겨찾기/최근 본 상태 유지 동작
+    risks:
+      - risk: 스토리지 용량/정책 제한
+        mitigation: 최대 개수 제한/롤링 삭제
+    order: 29
+implementation_guides:
+  - id: edge-runtime
+    title: Edge 런타임 베스트프랙티스
+    category: 아키텍처
+    content: |-
+      - API 라우트는 runtime='edge'를 기본으로 설정하고, Node 전용 의존성 사용을 피합니다.
+      - 전역 캐시/레이트리밋은 글로벌 스코프(Map)로 구성하되, 인스턴스 간 일관성은 보장하지 않음을 전제합니다.
+      - 타임아웃 제어는 AbortController를 사용하고, 예산(2.4s 검색)을 초과하지 않도록 병렬 호출 수를 제한합니다.
+    related_tasks:
+      - api-recommend
+      - api-health
+      - lib-cache
+      - security-rate-limit
+  - id: provider-time-budget
+    title: 프로바이더 동시성/시간 예산
+    category: 성능
+    content: |-
+      - SerpAPI 2~3개 쿼리를 동시에 발사하고 1.8s 타임아웃을 적용합니다.
+      - 충분치 않으면 Bing 1~2개를 1.2s 타임아웃으로 추가합니다.
+      - AllSettled로 결과를 모으고, 먼저 완료된 결과부터 정규화하여 사용합니다.
+    related_tasks:
+      - lib-providers-serpapi
+      - lib-providers-bing
+      - lib-normalize
+      - api-recommend
+  - id: normalization-mapping
+    title: 정규화/카테고리 매핑
+    category: 데이터처리
+    content: |-
+      - categories.json의 키워드를 소문자 비교로 매칭하고, 다중 키워드 충돌 시 우선순위를 정의합니다.
+      - 좌표가 없을 경우 distance/travelTime은 null 또는 보수적 기본치를 사용합니다.
+      - 가격 기호(€,€€,€€€) 우선, 텍스트 힌트는 보조로 사용합니다.
+    related_tasks:
+      - lib-normalize
+      - data-assets
+  - id: ranking-diversity
+    title: 랭킹/다양성 규칙
+    category: 사용자경험
+    content: |-
+      - 체인 중복 금지, 야간 안전 패널티 적용.
+      - P1 단계에서 동일 카테고리 최대 2개 제한 후처리를 적용합니다.
+      - 추천 이유는 한국어 템플릿으로 80자 이내 생성합니다.
+    related_tasks:
+      - lib-ranker
+      - lib-templates-ko
+      - p1-diversity
+  - id: telemetry-supabase
+    title: Supabase 로깅 가이드
+    category: 보안
+    content: |-
+      - 서비스 역할 키는 서버에서만 사용합니다.
+      - 이벤트 로깅은 fire-and-forget으로 처리하여 API 응답 경로를 차단하지 않습니다.
+      - 필수 필드: sessionId, eventType, ts, context, prefs, meta.
+    related_tasks:
+      - lib-telemetry
+      - api-recommend
+  - id: rate-limiting
+    title: 레이트리밋/보안
+    category: 보안
+    content: |-
+      - same-origin 기본, 초과 요청시 429와 Retry-After를 반환합니다.
+      - 키는 IP+sessionId 조합으로 생성합니다.
+      - 인스턴스간 공유되지 않음을 전제로 보수적 제한을 적용합니다.
+    related_tasks:
+      - security-rate-limit
+      - api-recommend
+  - id: korean-text-templates
+    title: 한국어 문구/라벨
+    category: 사용자경험
+    content: |-
+      - 카테고리/예산 라벨은 사전 정의 테이블을 사용합니다.
+      - ratingText는 값 없을 때 '정보 없음'으로 표기합니다.
+      - 현지 명칭 병기는 괄호 또는 서브텍스트로 제한합니다.
+    related_tasks:
+      - lib-templates-ko
+      - ui-i18n-accessibility
+      - ui-components
+  - id: ui-states
+    title: 결정론적 UI 상태 관리
+    category: 아키텍처
+    content: |-
+      - Idle→Loading(스켈레톤 ≤1.5s)→Partial/Ready→Error의 유한 상태 머신을 유지합니다.
+      - 4s 경과 시 폴백 결과를 우선 채워 즉시 Ready 상태로 전환합니다.
+    related_tasks:
+      - page-home
+      - ui-components
+execution_order:
+  summary: P0에서 환경/타입/데이터 자산→코어 라이브러리→프로바이더/정규화→랭킹/폴백→API 오케스트레이션→UI 통합→로그/보안→테스트 순으로 진행. 이후 P1 다양성/세션복원, P2 확장 기능을 적용합니다.
+  phases:
+    - phase_name: 기반 설정
+      task_ids:
+        - setup-env-config
+        - setup-styles-tailwind
+        - types-models
+        - data-assets
+      description: 환경변수/설정, 스타일 파이프라인, 타입과 데이터 자산 준비
+    - phase_name: 코어 라이브러리
+      task_ids:
+        - lib-context
+        - lib-classifier
+        - lib-query
+        - lib-maps
+        - lib-cache
+        - lib-templates-ko
+      description: 컨텍스트, 시간 계산, 쿼리 생성, 길찾기, 캐시, 한국어 템플릿 구현
+    - phase_name: 프로바이더/정규화
+      task_ids:
+        - lib-providers-serpapi
+        - lib-providers-bing
+        - lib-normalize
+      description: 외부 API 호출과 결과 정규화 파이프라인 완성
+    - phase_name: 랭킹/폴백
+      task_ids:
+        - lib-ranker
+        - lib-fallback
+      description: 점수 계산과 폴백 생성으로 최종 후보 집합 확보
+    - phase_name: API 오케스트레이션
+      task_ids:
+        - setup-logging
+        - security-rate-limit
+        - api-recommend
+        - api-health
+      description: 엔드포인트 구현과 로깅/레이트리밋 적용, SLA 준수 검증
+    - phase_name: 프론트엔드 통합
+      task_ids:
+        - ui-components
+        - page-home
+        - ui-i18n-accessibility
+      description: UI 컴포넌트와 상태 관리, 접근성/한국어 적용
+    - phase_name: 검증/테스트
+      task_ids:
+        - p0-tests
+      description: 단위/통합 테스트로 기능/성능/폴백 플로우 검증
+    - phase_name: P1 개선
+      task_ids:
+        - p1-diversity
+        - p1-session-persist
+        - p1-local-vibe-ui
+      description: 다양성 제약 강화, 세션내 입력 유지, 로컬 감성 표시
+    - phase_name: P2 확장
+      task_ids:
+        - p2-themes-extend
+        - p2-favorites-recent
+      description: 테마 확장과 즐겨찾기/최근 본 기능 추가

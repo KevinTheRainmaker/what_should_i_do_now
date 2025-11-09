@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>What should I do now?</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .progress-bar {
+            transition: width 0.3s ease;
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8 max-w-2xl">
+        <!-- 헤더 -->
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800 mb-2">What should I do now?</h1>
+            <p class="text-gray-600">여행자를 위한 킬링타임 추천 서비스</p>
+            <div class="text-sm text-gray-500 mt-2">
+                📍 {CURRENT_LOCATION} · {CURRENT_WEATHER}
+            </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="mb-8">
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-sm font-medium text-gray-700">진행률</span>
+                <span id="progress-text" class="text-sm text-gray-500">0%</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-2">
+                <div id="progress-bar" class="bg-blue-600 h-2 rounded-full progress-bar" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <!-- 질의응답 인터페이스 -->
+        <div id="question-interface" class="hidden">
+            <!-- 현재 질문 -->
+            <div id="current-question" class="bg-white rounded-lg shadow-md p-6 mb-6 fade-in">
+                <div class="mb-4">
+                    <h3 id="question-text" class="text-lg font-medium text-gray-800 mb-4"></h3>
+                    <div class="mb-4">
+                        <textarea id="answer-input" 
+                                  class="w-full p-3 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                  rows="4"
+                                  placeholder="답변을 입력해주세요..."></textarea>
+                    </div>
+                    <div class="flex justify-between">
+                        <button id="back-btn" 
+                                class="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled>
+                            ← 이전 질문
+                        </button>
+                        <button id="next-btn" 
+                                class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                            다음 질문 →
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 완료 후 추천 버튼 -->
+            <div id="completion-section" class="hidden bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="text-center">
+                    <h3 class="text-lg font-medium text-gray-800 mb-4">모든 질문이 완료되었습니다!</h3>
+                    <p class="text-gray-600 mb-6">이제 맞춤형 추천을 받아보세요.</p>
+                    <button id="get-recommendations-btn" 
+                            class="w-full bg-green-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2">
+                        🎯 추천 받기
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 시작 버튼 -->
+        <div id="start-section" class="text-center">
+            <div class="bg-white rounded-lg shadow-md p-8 mb-6">
+                <h2 class="text-xl font-medium text-gray-800 mb-4">맞춤형 추천을 위해 몇 가지 질문에 답해주세요</h2>
+                <p class="text-gray-600 mb-6">총 3개의 간단한 질문으로 더 정확한 추천을 받을 수 있습니다.</p>
+                <button id="start-questions-btn" 
+                        class="bg-blue-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                    질문 시작하기
+                </button>
+            </div>
+        </div>
+
+        <!-- 결과 섹션 -->
+        <div id="results-section" class="hidden">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-xl font-medium text-gray-800 mb-4">추천 결과</h2>
+                <div id="results-content"></div>
+            </div>
+        </div>
+
+        <!-- 로딩 섹션 -->
+        <div id="loading-section" class="hidden">
+            <div class="bg-white rounded-lg shadow-md p-6 text-center">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                <p class="text-gray-600">추천을 생성하고 있습니다...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class QuestionInterface {
+            constructor() {
+                this.sessionId = null;
+                this.currentQuestion = null;
+                this.isCompleted = false;
+                this.answers = {};
+                
+                this.initializeEventListeners();
+            }
+
+            initializeEventListeners() {
+                document.getElementById('start-questions-btn').addEventListener('click', () => this.startQuestions());
+                document.getElementById('next-btn').addEventListener('click', () => this.submitAnswer());
+                document.getElementById('back-btn').addEventListener('click', () => this.goBack());
+                document.getElementById('get-recommendations-btn').addEventListener('click', () => this.getRecommendations());
+            }
+
+            async startQuestions() {
+                try {
+                    const response = await fetch('/api/questions/start', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+                    
+                    const data = await response.json();
+                    this.sessionId = data.session_id;
+                    this.currentQuestion = data.current_question;
+                    this.isCompleted = data.is_completed;
+                    
+                    this.showQuestionInterface();
+                    this.updateProgress(data.progress);
+                    this.displayCurrentQuestion();
+                    
+                } catch (error) {
+                    console.error('질문 시작 실패:', error);
+                    alert('질문을 시작할 수 없습니다. 다시 시도해주세요.');
+                }
+            }
+
+            showQuestionInterface() {
+                document.getElementById('start-section').classList.add('hidden');
+                document.getElementById('question-interface').classList.remove('hidden');
+            }
+
+            displayCurrentQuestion() {
+                if (this.currentQuestion) {
+                    document.getElementById('question-text').textContent = this.currentQuestion.question;
+                    document.getElementById('answer-input').value = this.answers[this.currentQuestion.id] || '';
+                    document.getElementById('answer-input').focus();
+                }
+            }
+
+            async submitAnswer() {
+                const answer = document.getElementById('answer-input').value.trim();
+                if (!answer) {
+                    alert('답변을 입력해주세요.');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/questions/answer', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            session_id: this.sessionId,
+                            question_id: this.currentQuestion.id,
+                            answer: answer
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    this.answers[this.currentQuestion.id] = answer;
+                    this.currentQuestion = data.current_question;
+                    this.isCompleted = data.is_completed;
+                    
+                    this.updateProgress(data.progress);
+                    
+                    if (this.isCompleted) {
+                        this.showCompletionSection();
+                    } else {
+                        this.displayCurrentQuestion();
+                    }
+                    
+                } catch (error) {
+                    console.error('답변 제출 실패:', error);
+                    alert('답변을 제출할 수 없습니다. 다시 시도해주세요.');
+                }
+            }
+
+            async goBack() {
+                try {
+                    const response = await fetch(`/api/questions/back?session_id=${this.sessionId}`, {
+                        method: 'POST'
+                    });
+                    
+                    const data = await response.json();
+                    this.currentQuestion = data.current_question;
+                    this.isCompleted = data.is_completed;
+                    
+                    this.updateProgress(data.progress);
+                    this.displayCurrentQuestion();
+                    
+                    // 뒤로 가기 버튼 상태 업데이트
+                    document.getElementById('back-btn').disabled = !data.can_go_back;
+                    
+                } catch (error) {
+                    console.error('이전 질문으로 이동 실패:', error);
+                    alert('이전 질문으로 이동할 수 없습니다. 다시 시도해주세요.');
+                }
+            }
+
+            showCompletionSection() {
+                document.getElementById('current-question').classList.add('hidden');
+                document.getElementById('completion-section').classList.remove('hidden');
+            }
+
+            updateProgress(progress) {
+                document.getElementById('progress-bar').style.width = `${progress}%`;
+                document.getElementById('progress-text').textContent = `${progress}%`;
+            }
+
+            async getRecommendations() {
+                // 질의응답 결과를 기반으로 추천 요청
+                this.showLoading();
+                
+                try {
+                    const response = await fetch(`/api/questions/${this.sessionId}/recommend`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+                    
+                    const data = await response.json();
+                    this.displayResults(data);
+                    
+                } catch (error) {
+                    console.error('추천 생성 실패:', error);
+                    alert('추천을 생성할 수 없습니다. 다시 시도해주세요.');
+                    this.hideLoading();
+                }
+            }
+
+            convertAnswersToPreferences() {
+                // 질의응답 결과를 기존 Preferences 형태로 변환
+                // 실제 구현에서는 LLM을 사용해서 더 정교하게 변환할 수 있습니다
+                return {
+                    time_bucket: "30-60", // 기본값
+                    budget_level: "mid",   // 기본값
+                    themes: ["relax"],     // 기본값
+                    natural_input: Object.values(this.answers).join(' ')
+                };
+            }
+
+            showLoading() {
+                document.getElementById('question-interface').classList.add('hidden');
+                document.getElementById('loading-section').classList.remove('hidden');
+            }
+
+            hideLoading() {
+                document.getElementById('loading-section').classList.add('hidden');
+            }
+
+            displayResults(data) {
+                this.hideLoading();
+                document.getElementById('results-section').classList.remove('hidden');
+                
+                const resultsContent = document.getElementById('results-content');
+                resultsContent.innerHTML = '';
+                
+                if (data.items && data.items.length > 0) {
+                    data.items.forEach((item, index) => {
+                        const itemDiv = document.createElement('div');
+                        itemDiv.className = 'border border-gray-200 rounded-lg p-4 mb-4';
+                        itemDiv.innerHTML = `
+                            <h3 class="font-medium text-gray-800 mb-2">${index + 1}. ${item.name}</h3>
+                            <p class="text-gray-600 text-sm mb-2">${item.description || '설명 없음'}</p>
+                            <div class="flex justify-between items-center">
+                                <span class="text-sm text-gray-500">${item.category || '카테고리 없음'}</span>
+                                <span class="text-sm font-medium text-blue-600">${item.total_score || 0}점</span>
+                            </div>
+                        `;
+                        resultsContent.appendChild(itemDiv);
+                    });
+                } else {
+                    resultsContent.innerHTML = '<p class="text-gray-600">추천 결과가 없습니다.</p>';
+                }
+            }
+        }
+
+        // 페이지 로드 시 초기화
+        document.addEventListener('DOMContentLoaded', () => {
+            new QuestionInterface();
+        });
+    </script>
+</body>
+</html>
