@@ -315,8 +315,8 @@ class HybridInterface {
 
             this.showLoading();
 
-            // 단계별 진행 상황 시뮬레이션
-            this.simulateProgress();
+            // 단계별 진행 상황 시뮬레이션 (await 제거 - 백그라운드에서 실행)
+            const progressPromise = this.simulateProgress();
 
             const response = await fetch('/api/recommend', {
                 method: 'POST',
@@ -327,11 +327,20 @@ class HybridInterface {
             });
 
             const data = await response.json();
-            this.displayResults(data);
+
+            // API 응답이 왔으면 프로그레스 시뮬레이션 중단하고 결과 표시
+            this.stopProgressSimulation();
+            await this.completeAllSteps(); // 모든 단계 완료 표시
+
+            // 약간의 딜레이 후 결과 표시
+            setTimeout(() => {
+                this.displayResults(data);
+            }, 300);
 
         } catch (error) {
             console.error('추천 생성 실패:', error);
             alert('추천을 생성할 수 없습니다. 다시 시도해주세요.');
+            this.stopProgressSimulation();
             this.hideLoading();
         }
     }
@@ -400,8 +409,8 @@ class HybridInterface {
 
         this.showLoading();
 
-        // 단계별 진행 상황 시뮬레이션
-        this.simulateProgress();
+        // 단계별 진행 상황 시뮬레이션 (백그라운드에서 실행)
+        const progressPromise = this.simulateProgress();
 
         try {
             const response = await fetch('/api/recommend', {
@@ -413,11 +422,20 @@ class HybridInterface {
             });
 
             const data = await response.json();
-            this.displayResults(data);
+
+            // API 응답이 왔으면 프로그레스 시뮬레이션 중단하고 결과 표시
+            this.stopProgressSimulation();
+            await this.completeAllSteps(); // 모든 단계 완료 표시
+
+            // 약간의 딜레이 후 결과 표시
+            setTimeout(() => {
+                this.displayResults(data);
+            }, 300);
 
         } catch (error) {
             console.error('추천 생성 실패:', error);
             alert('추천을 생성할 수 없습니다. 다시 시도해주세요.');
+            this.stopProgressSimulation();
             this.hideLoading();
         }
     }
@@ -478,19 +496,27 @@ class HybridInterface {
     }
 
     async simulateProgress() {
+        // companion_graph 워크플로우에 맞춘 실제 처리 시간 기반 시뮬레이션
         const steps = [
-            { step: 1, delay: 800, text: '컨텍스트 초기화 중...' },
-            { step: 2, delay: 1500, text: '검색 쿼리 생성 중...' },
-            { step: 3, delay: 3000, text: '장소 검색 및 정규화 중...' },
-            { step: 4, delay: 2000, text: '이동시간 계산 중...' },
-            { step: 5, delay: 1500, text: '시간 적합도 분류 중...' },
-            { step: 6, delay: 2000, text: '활동 랭킹 및 선별 중...' },
-            { step: 7, delay: 2500, text: 'LLM 평가 및 선별 중...' },
-            { step: 8, delay: 4000, text: '리뷰 수집 및 요약 중...' },
-            { step: 9, delay: 1000, text: '최종 추천 완성 중...' }
+            { step: 1, delay: 600, text: '🔧 컨텍스트 초기화 중...' },           // initialize_context
+            { step: 2, delay: 1800, text: '🤖 검색 쿼리 생성 중...' },          // generate_queries (LLM 호출)
+            { step: 3, delay: 3500, text: '🔍 장소 검색 및 정규화 중...' },     // search_and_normalize (API 호출)
+            { step: 4, delay: 2200, text: '🚗 이동시간 필터링 중...' },         // filter_by_travel_time (API 호출)
+            { step: 5, delay: 800, text: '⏰ 시간 적합도 분류 중...' },          // classify_time
+            { step: 6, delay: 1000, text: '🏆 활동 랭킹 중...' },               // rank_activities
+            { step: 7, delay: 3000, text: '🧠 AI 평가 및 선별 중...' },         // llm_evaluate (LLM 호출)
+            { step: 8, delay: 5000, text: '💬 리뷰 수집 및 요약 중...' },       // fetch_reviews (API + LLM)
+            { step: 9, delay: 800, text: '✨ 최종 결과 생성 중...' }            // generate_fallback
         ];
 
+        this.progressRunning = true;
+        this.currentProgressStep = 0;
+
         for (const { step, delay, text } of steps) {
+            if (!this.progressRunning) break; // 중단 요청이 있으면 멈춤
+
+            this.currentProgressStep = step;
+
             // 현재 단계 활성화
             this.updateStep(step, 'active');
 
@@ -504,8 +530,22 @@ class HybridInterface {
             // 지연 시간 대기
             await new Promise(resolve => setTimeout(resolve, delay));
 
+            if (!this.progressRunning) break; // 대기 후에도 확인
+
             // 단계 완료 표시
             this.updateStep(step, 'completed');
+        }
+    }
+
+    stopProgressSimulation() {
+        this.progressRunning = false;
+    }
+
+    async completeAllSteps() {
+        // 현재 단계부터 9단계까지 빠르게 완료 표시
+        for (let step = this.currentProgressStep || 1; step <= 9; step++) {
+            this.updateStep(step, 'completed');
+            await new Promise(resolve => setTimeout(resolve, 50)); // 빠른 애니메이션
         }
     }
 
