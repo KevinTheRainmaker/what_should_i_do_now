@@ -1,0 +1,110 @@
+/* 스켈레톤 로딩 애니메이션 */
+.skeleton {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: loading 1.5s infinite;
+}
+
+@keyframes loading {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* 프로그레스 바 애니메이션 */
+.progress-bar {
+    transition: width 0.3s ease;
+}
+
+/* 페이드 인 애니메이션 */
+.fade-in {
+    animation: fadeIn 0.5s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* 버튼 선택 상태 */
+.time-btn.selected,
+.budget-btn.selected,
+.theme-btn.selected {
+    border-color: #3b82f6 !important;
+    background-color: #dbeafe !important;
+}
+
+/* 카드 호버 효과 */
+.card-hover {
+    transition: all 0.3s ease;
+}
+
+.card-hover:hover {
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+}
+
+/* 모달 배경 */
+.modal-backdrop {
+    backdrop-filter: blur(4px);
+}
+
+/* 결과 카드 스타일링 */
+.result-card {
+    transition: all 0.2s ease-in-out;
+}
+
+.result-card:hover {
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* 진행 단계 아이콘 */
+.step-icon {
+    transition: all 0.3s ease;
+}
+
+/* 스핀 애니메이션 */
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
+
+/* 숨기기 유틸리티 */
+.hidden {
+    display: none !important;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 640px) {
+    .container {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+}
+
+/* 리뷰 카드 스타일 */
+.review-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* 이미지 오류 처리 */
+.image-placeholder {
+    background-color: #f3f4f6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #9ca3af;
+}

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>What should I do now?</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Custom Styles -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8 max-w-md">
+        <!-- 헤더 -->
+        <div class="text-center mb-8">
+            <h1 class="text-2xl font-bold text-gray-800 mb-2">What should I do now?</h1>
+            <p class="text-gray-600">여행자를 위한 킬링타임 추천 서비스</p>
+            <div class="text-sm text-gray-500 mt-2">
+                📍 <span id="current-location">로딩 중...</span> · <span id="current-weather">로딩 중...</span>
+            </div>
+        </div>
+
+        <!-- 기존 입력 폼 -->
+        <div id="input-form" class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <form id="preferences-form">
+                <!-- 시간 선택 -->
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-3">남는 시간이 얼마나 되시나요?</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button type="button" class="time-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="≤30">30분 이하</button>
+                        <button type="button" class="time-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="30-60">30분~1시간</button>
+                        <button type="button" class="time-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="60-120">1~2시간</button>
+                        <button type="button" class="time-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value=">120">2시간 이상</button>
+                    </div>
+                </div>
+
+                <!-- 예산 선택 -->
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-3">예산은 어느 정도로 생각하시나요?</label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button type="button" class="budget-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="low">낮음</button>
+                        <button type="button" class="budget-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="mid">중간</button>
+                        <button type="button" class="budget-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="high">높음</button>
+                    </div>
+                </div>
+
+                <!-- 테마 선택 -->
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-3">어떤 분위기를 원하시나요?</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button type="button" class="theme-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="relax">휴식</button>
+                        <button type="button" class="theme-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="shopping">쇼핑</button>
+                        <button type="button" class="theme-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="food">식사</button>
+                        <button type="button" class="theme-btn p-3 border-2 border-gray-200 rounded-lg text-sm hover:border-blue-500 hover:bg-blue-50" data-value="activity">액티비티</button>
+                    </div>
+                </div>
+
+                <!-- 자연어 입력 (AI 질문 완료 후 표시) -->
+                <div id="natural-input-section" class="mb-6 hidden">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        💬 AI 질문 답변 요약
+                    </label>
+                    <textarea id="natural-input"
+                              class="w-full p-3 border border-gray-300 rounded-lg resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                              rows="3"
+                              placeholder="AI 질문에 대한 답변이 여기에 자동으로 추가됩니다..."
+                              readonly></textarea>
+                    <p class="text-xs text-gray-500 mt-1">
+                        이 정보는 AI가 생성한 맞춤형 질문에 대한 답변입니다
+                    </p>
+                </div>
+
+                <!-- 추천 버튼 -->
+                <button type="submit"
+                        class="w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors">
+                    🎯 맞춤 추천 받기
+                </button>
+            </form>
+        </div>
+
+        <!-- 질의응답 인터페이스 (숨김) -->
+        <div id="question-interface" class="hidden">
+            <!-- Progress Bar -->
+            <div class="mb-6">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-sm font-medium text-gray-700">AI 질의응답 진행률</span>
+                    <span id="progress-text" class="text-sm text-gray-500">0%</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                    <div id="progress-bar" class="bg-blue-600 h-2 rounded-full progress-bar" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <!-- 현재 질문 -->
+            <div id="current-question" class="bg-white rounded-lg shadow-md p-6 mb-6 fade-in">
+                <!-- JavaScript에서 동적으로 생성 -->
+            </div>
+
+            <!-- 완료 후 추천 생성 -->
+            <div id="completion-section" class="hidden bg-white rounded-lg shadow-md p-6 mb-6">
+                <div class="text-center">
+                    <h3 class="text-lg font-medium text-gray-800 mb-4">✅ AI 질의응답이 완료되었습니다!</h3>
+                    <p class="text-gray-600 mb-6">이제 맞춤형 추천을 생성합니다.</p>
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600 mx-auto mb-4"></div>
+                    <p class="text-gray-600">추천을 생성하고 있습니다...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 결과 섹션 -->
+        <div id="results-section" class="hidden">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-xl font-medium text-gray-800 mb-4">추천 결과</h2>
+                <div id="results-content"></div>
+            </div>
+        </div>
+
+        <!-- 로딩 섹션 -->
+        <div id="loading-section" class="hidden">
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="text-center mb-6">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                    <h3 class="text-lg font-medium text-gray-800 mb-2">맞춤형 추천 생성 중</h3>
+                    <p class="text-gray-600">AI가 당신의 선호도에 맞는 장소를 찾고 있습니다...</p>
+                </div>
+
+                <!-- 진행 단계 표시 -->
+                <div class="space-y-4">
+                    <div id="step-1" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">1</span>
+                        </div>
+                        <span class="text-sm text-gray-600">컨텍스트 초기화 중...</span>
+                    </div>
+
+                    <div id="step-2" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">2</span>
+                        </div>
+                        <span class="text-sm text-gray-600">검색 쿼리 생성 중...</span>
+                    </div>
+
+                    <div id="step-3" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">3</span>
+                        </div>
+                        <span class="text-sm text-gray-600">장소 검색 및 정규화 중...</span>
+                    </div>
+
+                    <div id="step-4" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">4</span>
+                        </div>
+                        <span class="text-sm text-gray-600">이동시간 계산 중...</span>
+                    </div>
+
+                    <div id="step-5" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">5</span>
+                        </div>
+                        <span class="text-sm text-gray-600">시간 적합도 분류 중...</span>
+                    </div>
+
+                    <div id="step-6" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">6</span>
+                        </div>
+                        <span class="text-sm text-gray-600">활동 랭킹 및 선별 중...</span>
+                    </div>
+
+                    <div id="step-7" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">7</span>
+                        </div>
+                        <span class="text-sm text-gray-600">LLM 평가 및 선별 중...</span>
+                    </div>
+
+                    <div id="step-8" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">8</span>
+                        </div>
+                        <span class="text-sm text-gray-600">리뷰 수집 및 요약 중...</span>
+                    </div>
+
+                    <div id="step-9" class="flex items-center p-3 bg-gray-50 rounded-lg">
+                        <div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-3">
+                            <span class="text-xs font-medium text-gray-600">9</span>
+                        </div>
+                        <span class="text-sm text-gray-600">최종 추천 완성 중...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 사진 확대 모달 -->
+    <div id="photo-modal" class="fixed inset-0 bg-black bg-opacity-75 hidden z-50 flex items-center justify-center p-4">
+        <div class="relative max-w-4xl max-h-full">
+            <button onclick="hidePhotoModal()"
+                    class="absolute top-2 right-2 text-white text-2xl font-bold bg-black bg-opacity-50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-opacity-75">
+                ×
+            </button>
+            <img id="modal-photo" src="" alt="" class="max-w-full max-h-full rounded-lg">
+            <p id="modal-caption" class="text-white text-center mt-2 text-sm"></p>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="/static/js/app.js"></script>
+
+    <!-- 위치 및 날씨 정보 로드 -->
+    <script>
+        // 서버에서 위치와 날씨 정보를 받아옴
+        fetch('/api/context')
+            .then(response => response.json())
+            .then(data => {
+                const locationEl = document.getElementById('current-location');
+                const weatherEl = document.getElementById('current-weather');
+
+                if (locationEl) locationEl.textContent = data.location || 'Barcelona, Spain';
+                if (weatherEl) weatherEl.textContent = data.weather || '☀️ 맑음 24°C';
+            })
+            .catch(error => {
+                console.error('컨텍스트 정보 로드 실패:', error);
+                // 기본값 설정
+                const locationEl = document.getElementById('current-location');
+                const weatherEl = document.getElementById('current-weather');
+                if (locationEl) locationEl.textContent = 'Barcelona, Spain';
+                if (weatherEl) weatherEl.textContent = '☀️ 맑음 24°C';
+            });
+    </script>
+</body>
+</html>
