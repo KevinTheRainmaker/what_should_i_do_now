@@ -6,10 +6,12 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
+import json
+import asyncio
 
 from app.types.requests import RecommendRequest, RecommendResponse, HealthResponse
 from app.types.activity import Preferences
@@ -134,6 +136,164 @@ async def get_context():
         "temp": app_config["temp"]
     }
 
+
+# 노드 이름과 단계 번호 매핑
+NODE_TO_STEP = {
+    "initialize_context": 1,
+    "generate_queries": 2,
+    "search_and_normalize": 3,
+    "filter_by_travel_time": 4,
+    "classify_time": 5,
+    "rank_activities": 6,
+    "llm_evaluate": 7,
+    "fetch_reviews": 8,
+    "generate_fallback": 9
+}
+
+# 단계별 텍스트
+STEP_TEXTS = {
+    1: "🔧 컨텍스트 초기화 중...",
+    2: "🤖 검색 쿼리 생성 중...",
+    3: "🔍 장소 검색 및 정규화 중...",
+    4: "🚗 이동시간 필터링 중...",
+    5: "⏰ 시간 적합도 분류 중...",
+    6: "🏆 활동 랭킹 중...",
+    7: "🧠 AI 평가 및 선별 중...",
+    8: "💬 리뷰 수집 및 요약 중...",
+    9: "✨ 최종 결과 생성 중..."
+}
+
+@app.post("/api/recommend/stream")
+async def recommend_activities_stream(request: RecommendRequest):
+    """활동 추천 엔드포인트 (SSE 스트리밍)"""
+    
+    async def event_generator():
+        start_time = time.time()
+        result = None
+        
+        try:
+            print("=================================")
+            print("[Gap-time Companion Agent 시작]")
+            print("=================================")
+            print(f"요청: {request.preferences.time_bucket}, {request.preferences.budget_level}, {[t.value for t in request.preferences.themes]}")
+            
+            # 초기 상태 구성
+            initial_state = {
+                "preferences": request.preferences,
+                "context_override": request.context_override or {},
+                "start_time": start_time
+            }
+            
+            # LangGraph 이벤트 스트리밍
+            print("\nLangGraph 워크플로우 실행 중 (스트리밍)...")
+            
+            async for event in companion_graph.astream_events(initial_state, version="v2"):
+                event_type = event.get("event")
+                node_name = event.get("name", "")
+                
+                # 노드 시작 이벤트
+                if event_type == "on_chain_start" and node_name in NODE_TO_STEP:
+                    step = NODE_TO_STEP[node_name]
+                    text = STEP_TEXTS.get(step, f"{node_name} 처리 중...")
+                    
+                    yield f"data: {json.dumps({'type': 'step_start', 'step': step, 'text': text, 'node': node_name})}\n\n"
+                
+                # 노드 완료 이벤트
+                elif event_type == "on_chain_end" and node_name in NODE_TO_STEP:
+                    step = NODE_TO_STEP[node_name]
+                    
+                    yield f"data: {json.dumps({'type': 'step_complete', 'step': step, 'node': node_name})}\n\n"
+                    
+                    # 최종 결과 저장 (마지막 노드 완료 시)
+                    if node_name == "generate_fallback":
+                        # 최종 상태 가져오기
+                        if "data" in event and "output" in event["data"]:
+                            result = event["data"]["output"]
+                        elif "data" in event and isinstance(event["data"], dict):
+                            result = event["data"]
+            
+            # 최종 결과가 없으면 전체 그래프 실행 결과 가져오기
+            if not result:
+                print("   ⚠️ 이벤트에서 최종 결과를 찾을 수 없음 - 전체 실행으로 대체")
+                result = await companion_graph.ainvoke(initial_state)
+            
+            # 최종 결과 전송
+            if result:
+                end_time = time.time()
+                latency_ms = int((end_time - start_time) * 1000)
+                
+                print("=================================")
+                print("[최종 결과 요약]")
+                print("=================================")
+                print(f"총 소요시간: {latency_ms}ms")
+                print(f"검색 통계: {result.get('source_stats', {})}")
+                print(f"폴백 사용: {'예' if result.get('fallback_used', False) else '아니오'}")
+                print(f"최종 추천: {len(result['ranked_items'])}개")
+                for i, item in enumerate(result['ranked_items'], 1):
+                    print(f"   {i}. {item.name} ({item.total_score:.1f}점)")
+                print("=================================\n")
+                
+                # LLM 평가 결과가 있으면 사용, 없으면 기본 결과 사용
+                final_items = result.get("llm_selected_items", result["ranked_items"])
+                
+                # Pydantic 모델을 dict로 변환
+                def to_dict(obj):
+                    if hasattr(obj, "dict"):
+                        return obj.dict()
+                    elif hasattr(obj, "__dict__"):
+                        return {k: to_dict(v) for k, v in obj.__dict__.items()}
+                    elif isinstance(obj, list):
+                        return [to_dict(item) for item in obj]
+                    elif isinstance(obj, dict):
+                        return {k: to_dict(v) for k, v in obj.items()}
+                    else:
+                        return obj
+                
+                response_data = {
+                    "session_id": result.get("session_id", ""),
+                    "context": to_dict(result.get("context", {})),
+                    "items": [to_dict(item) for item in final_items],
+                    "meta": {
+                        "latencyMs": latency_ms,
+                        "sourceStats": result.get("source_stats", {}),
+                        "fallbackUsed": result.get("fallback_used", False),
+                        "llmEvaluated": "llm_selected_items" in result,
+                        "llmEvaluation": result.get("llm_evaluation", "")
+                    }
+                }
+                
+                yield f"data: {json.dumps({'type': 'result', 'data': response_data})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'message': '결과를 생성할 수 없습니다.'})}\n\n"
+                
+        except Exception as e:
+            import traceback
+            error_details = {
+                "error_type": type(e).__name__,
+                "error_message": str(e),
+                "traceback": traceback.format_exc()
+            }
+            
+            print(f"❌ CRITICAL ERROR in recommend_activities_stream:")
+            print(f"   Error Type: {error_details['error_type']}")
+            print(f"   Error Message: {error_details['error_message']}")
+            print(f"   Full Traceback:")
+            print(error_details['traceback'])
+            
+            try:
+                yield f"data: {json.dumps({'type': 'error', 'message': '추천을 생성하는 중 오류가 발생했습니다.', 'error_type': error_details['error_type']})}\n\n"
+            except:
+                pass  # 스트림이 이미 닫혔을 수 있음
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 @app.post("/api/recommend", response_model=RecommendResponse)
 async def recommend_activities(request: RecommendRequest):

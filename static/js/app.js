@@ -315,32 +315,12 @@ class HybridInterface {
 
             this.showLoading();
 
-            // 단계별 진행 상황 시뮬레이션 (await 제거 - 백그라운드에서 실행)
-            const progressPromise = this.simulateProgress();
-
-            const response = await fetch('/api/recommend', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(formData)
-            });
-
-            const data = await response.json();
-
-            // API 응답이 왔으면 프로그레스 시뮬레이션 중단하고 결과 표시
-            this.stopProgressSimulation();
-            await this.completeAllSteps(); // 모든 단계 완료 표시
-
-            // 약간의 딜레이 후 결과 표시
-            setTimeout(() => {
-                this.displayResults(data);
-            }, 300);
+            // SSE 스트리밍으로 실제 이벤트 수신
+            await this.streamRecommendations(formData);
 
         } catch (error) {
             console.error('추천 생성 실패:', error);
             alert('추천을 생성할 수 없습니다. 다시 시도해주세요.');
-            this.stopProgressSimulation();
             this.hideLoading();
         }
     }
@@ -409,33 +389,12 @@ class HybridInterface {
 
         this.showLoading();
 
-        // 단계별 진행 상황 시뮬레이션 (백그라운드에서 실행)
-        const progressPromise = this.simulateProgress();
-
         try {
-            const response = await fetch('/api/recommend', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(formData)
-            });
-
-            const data = await response.json();
-
-            // API 응답이 왔으면 프로그레스 시뮬레이션 중단하고 결과 표시
-            this.stopProgressSimulation();
-            await this.completeAllSteps(); // 모든 단계 완료 표시
-
-            // 약간의 딜레이 후 결과 표시
-            setTimeout(() => {
-                this.displayResults(data);
-            }, 300);
-
+            // SSE 스트리밍으로 실제 이벤트 수신
+            await this.streamRecommendations(formData);
         } catch (error) {
             console.error('추천 생성 실패:', error);
             alert('추천을 생성할 수 없습니다. 다시 시도해주세요.');
-            this.stopProgressSimulation();
             this.hideLoading();
         }
     }
@@ -495,50 +454,156 @@ class HybridInterface {
         if (loadingSection) loadingSection.classList.add('hidden');
     }
 
-    async simulateProgress() {
-        // companion_graph 워크플로우에 맞춘 실제 처리 시간 기반 시뮬레이션
-        const steps = [
-            { step: 1, delay: 600, text: '🔧 컨텍스트 초기화 중...' },           // initialize_context
-            { step: 2, delay: 1800, text: '🤖 검색 쿼리 생성 중...' },          // generate_queries (LLM 호출)
-            { step: 3, delay: 3500, text: '🔍 장소 검색 및 정규화 중...' },     // search_and_normalize (API 호출)
-            { step: 4, delay: 2200, text: '🚗 이동시간 필터링 중...' },         // filter_by_travel_time (API 호출)
-            { step: 5, delay: 800, text: '⏰ 시간 적합도 분류 중...' },          // classify_time
-            { step: 6, delay: 1000, text: '🏆 활동 랭킹 중...' },               // rank_activities
-            { step: 7, delay: 3000, text: '🧠 AI 평가 및 선별 중...' },         // llm_evaluate (LLM 호출)
-            { step: 8, delay: 5000, text: '💬 리뷰 수집 및 요약 중...' },       // fetch_reviews (API + LLM)
-            { step: 9, delay: 800, text: '✨ 최종 결과 생성 중...' }            // generate_fallback
-        ];
+    async streamRecommendations(formData) {
+        return new Promise((resolve, reject) => {
+            // POST 요청을 위한 fetch 사용 (EventSource는 GET만 지원)
+            fetch('/api/recommend/stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(formData)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
 
-        this.progressRunning = true;
-        this.currentProgressStep = 0;
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
 
-        for (const { step, delay, text } of steps) {
-            if (!this.progressRunning) break; // 중단 요청이 있으면 멈춤
+                let resultReceived = false;
+                
+                const processStream = async () => {
+                    try {
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            
+                            if (done) {
+                                // 마지막 버퍼 처리
+                                if (buffer.trim()) {
+                                    const lines = buffer.split('\n');
+                                    for (const line of lines) {
+                                        if (line.startsWith('data: ')) {
+                                            const data = line.slice(6);
+                                            try {
+                                                const event = JSON.parse(data);
+                                                this.handleProgressEvent(event);
+                                                
+                                                if (event.type === 'result') {
+                                                    resultReceived = true;
+                                                    this.hideLoading();
+                                                    setTimeout(() => {
+                                                        this.displayResults(event.data);
+                                                    }, 300);
+                                                    resolve(event.data);
+                                                    return;
+                                                }
+                                                
+                                                if (event.type === 'error') {
+                                                    this.hideLoading();
+                                                    reject(new Error(event.message || '알 수 없는 오류가 발생했습니다.'));
+                                                    return;
+                                                }
+                                            } catch (e) {
+                                                console.error('이벤트 파싱 오류:', e, data);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // 스트림이 완료되었지만 결과가 없는 경우
+                                if (!resultReceived) {
+                                    this.hideLoading();
+                                    reject(new Error('결과를 받지 못했습니다.'));
+                                }
+                                break;
+                            }
 
-            this.currentProgressStep = step;
+                            buffer += decoder.decode(value, { stream: true });
+                            const lines = buffer.split('\n');
+                            buffer = lines.pop() || ''; // 마지막 불완전한 라인은 버퍼에 보관
 
-            // 현재 단계 활성화
-            this.updateStep(step, 'active');
+                            for (const line of lines) {
+                                if (line.startsWith('data: ')) {
+                                    const data = line.slice(6); // 'data: ' 제거
+                                    
+                                    try {
+                                        const event = JSON.parse(data);
+                                        this.handleProgressEvent(event);
+                                        
+                                        // 최종 결과 수신 시
+                                        if (event.type === 'result') {
+                                            resultReceived = true;
+                                            this.hideLoading();
+                                            setTimeout(() => {
+                                                this.displayResults(event.data);
+                                            }, 300);
+                                            resolve(event.data);
+                                            return;
+                                        }
+                                        
+                                        // 에러 발생 시
+                                        if (event.type === 'error') {
+                                            this.hideLoading();
+                                            reject(new Error(event.message || '알 수 없는 오류가 발생했습니다.'));
+                                            return;
+                                        }
+                                    } catch (e) {
+                                        console.error('이벤트 파싱 오류:', e, data);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        console.error('스트림 처리 오류:', error);
+                        this.hideLoading();
+                        reject(error);
+                    }
+                };
 
-            // 텍스트 업데이트
-            const stepElement = document.getElementById(`step-${step}`);
-            if (stepElement) {
-                const textElement = stepElement.querySelector('span:last-child');
-                if (textElement) textElement.textContent = text;
-            }
-
-            // 지연 시간 대기
-            await new Promise(resolve => setTimeout(resolve, delay));
-
-            if (!this.progressRunning) break; // 대기 후에도 확인
-
-            // 단계 완료 표시
-            this.updateStep(step, 'completed');
-        }
+                processStream();
+            })
+            .catch(error => {
+                console.error('요청 실패:', error);
+                this.hideLoading();
+                reject(error);
+            });
+        });
     }
 
-    stopProgressSimulation() {
-        this.progressRunning = false;
+    handleProgressEvent(event) {
+        switch (event.type) {
+            case 'step_start':
+                // 단계 시작
+                this.updateStep(event.step, 'active');
+                
+                // 텍스트 업데이트
+                const stepElement = document.getElementById(`step-${event.step}`);
+                if (stepElement) {
+                    const textElement = stepElement.querySelector('span:last-child');
+                    if (textElement) textElement.textContent = event.text;
+                }
+                break;
+                
+            case 'step_complete':
+                // 단계 완료
+                this.updateStep(event.step, 'completed');
+                break;
+                
+            case 'result':
+                // 모든 단계 완료 표시
+                for (let step = 1; step <= 9; step++) {
+                    this.updateStep(step, 'completed');
+                }
+                break;
+                
+            case 'error':
+                // 에러 발생 시 모든 단계 초기화
+                this.resetAllSteps();
+                break;
+        }
     }
 
     async completeAllSteps() {
