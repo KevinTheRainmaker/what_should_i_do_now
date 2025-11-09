@@ -37,6 +37,7 @@ class QuestionSession(BaseModel):
     is_completed: bool = False
     created_at: datetime
     updated_at: datetime
+    initial_preferences: Optional[Dict[str, Any]] = None
 
 class QuestionRequest(BaseModel):
     session_id: str
@@ -393,7 +394,6 @@ async def start_question_session(request: QuestionStartRequest):
     current_temp = os.getenv("APP_TEMP", "24")
     current_weather_condition = os.getenv("APP_WEATHER_CONDITION", "sunny")
 
-    # 사용자 선택 정보 (있는 경우)
     user_time = request.time_bucket if request else None
     user_budget = request.budget_level if request else None
     user_themes = request.themes if request else None
@@ -409,13 +409,20 @@ async def start_question_session(request: QuestionStartRequest):
         user_themes=user_themes
     )
 
+    initial_preferences = {
+        "time_bucket": request.time_bucket,
+        "budget_level": request.budget_level,
+        "themes": [request.themes]
+    }
+    
     session = QuestionSession(
         session_id=session_id,
         questions=[first_question],  # 첫 번째 질문만 저장
         current_question_index=0,
         is_completed=False,
         created_at=datetime.now(),
-        updated_at=datetime.now()
+        updated_at=datetime.now(),
+        initial_preferences=initial_preferences
     )
 
     question_sessions[session_id] = session
@@ -943,47 +950,14 @@ def convert_question_answers_to_preferences(session: QuestionSession) -> Prefere
     for pair in sorted(question_answer_pairs, key=lambda x: x.order):
         natural_input += f"Q: {pair.question} A: {pair.answer} "
     
-    # 기본값 설정 (질문 답변에서 추출할 수 없는 경우)
-    time_bucket = "30-60"
-    budget_level = "mid"
-    themes = ["relax"]
-    
-    # 질문 답변들을 분석해서 기본값 업데이트
-    for pair in question_answer_pairs:
-        answer_lower = pair.answer.lower()
-        
-        # 시간 관련 키워드 분석
-        if "30분" in answer_lower or "30분 이하" in answer_lower:
-            time_bucket = "≤30"
-        elif "1시간" in answer_lower or "60분" in answer_lower:
-            time_bucket = "30-60"
-        elif "2시간" in answer_lower:
-            time_bucket = "60-120"
-        elif "2시간 이상" in answer_lower:
-            time_bucket = ">120"
-        
-        # 예산 관련 키워드 분석
-        if "낮음" in answer_lower or "저렴" in answer_lower or "싸게" in answer_lower:
-            budget_level = "low"
-        elif "높음" in answer_lower or "비싸게" in answer_lower or "고급" in answer_lower:
-            budget_level = "high"
-        
-        # 테마 관련 키워드 분석
-        if "휴식" in answer_lower or "조용" in answer_lower:
-            themes = ["relax"]
-        elif "쇼핑" in answer_lower or "구매" in answer_lower:
-            themes = ["shopping"]
-        elif "식사" in answer_lower or "음식" in answer_lower or "맛집" in answer_lower:
-            themes = ["food"]
-        elif "액티비티" in answer_lower or "활동" in answer_lower or "운동" in answer_lower:
-            themes = ["activity"]
+    initial_prefs = session.initial_preferences
     
     from app.types.activity import TimeBucket, PriceLevel, Theme
     
     return Preferences(
-        time_bucket=TimeBucket(time_bucket),
-        budget_level=PriceLevel(budget_level),
-        themes=[Theme(theme) for theme in themes],
+        time_bucket=TimeBucket(initial_prefs["time_bucket"]),
+        budget_level=PriceLevel(initial_prefs["budget_level"]),
+        themes=[Theme(theme) for theme in initial_prefs["themes"]],
         natural_input=natural_input.strip()
     )
 

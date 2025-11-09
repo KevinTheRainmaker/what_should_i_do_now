@@ -19,21 +19,36 @@ async def search_and_normalize(state: Dict[str, Any]) -> Dict[str, Any]:
     # 병렬 검색 실행
     all_results = []
     
-    # SerpAPI 우선 실행
-    serpapi_tasks = [
-        search_serpapi(query) for query in queries 
-        if query.target == "gmaps"
-    ]
+    # SerpAPI 우선 실행 - 공유 클라이언트 사용
+    serpapi_queries = [query for query in queries if query.target == "gmaps"]
     
-    if serpapi_tasks:
-        print(f"   📡 SerpAPI 요청 {len(serpapi_tasks)}개 병렬 실행 중...")
-        serpapi_results = await asyncio.gather(*serpapi_tasks, return_exceptions=True)
-        serpapi_count = 0
-        for result in serpapi_results:
-            if isinstance(result, list):
-                all_results.extend(result)
-                serpapi_count += len(result)
-        print(f"   ✅ SerpAPI 결과: {serpapi_count}개")
+    if serpapi_queries:
+        print(f"   📡 SerpAPI 요청 {len(serpapi_queries)}개 병렬 실행 중...")
+        # 공유 httpx 클라이언트를 사용하여 병렬 실행
+        shared_client = httpx.AsyncClient(
+            timeout=1.8,
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
+        )
+        try:
+            serpapi_tasks = [
+                search_serpapi_with_client(query, shared_client) 
+                for query in serpapi_queries
+            ]
+            serpapi_results = await asyncio.gather(*serpapi_tasks, return_exceptions=True)
+            serpapi_count = 0
+            for result in serpapi_results:
+                if isinstance(result, list):
+                    all_results.extend(result)
+                    serpapi_count += len(result)
+            print(f"   ✅ SerpAPI 결과: {serpapi_count}개")
+        finally:
+            # 클라이언트 정리 - 이벤트 루프가 닫혀있을 수 있으므로 안전하게 처리
+            try:
+                await shared_client.aclose()
+            except (RuntimeError, Exception) as e:
+                # 이벤트 루프가 닫혀있거나 다른 정리 오류는 무시 (기능에는 영향 없음)
+                if "Event loop is closed" not in str(e):
+                    print(f"   ⚠️ httpx 클라이언트 정리 중 경고: {e}")
     
     # 결과가 부족하면 Bing 검색
     if len(all_results) < 5:
@@ -82,7 +97,15 @@ async def search_and_normalize(state: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 async def search_serpapi(query: QuerySpec) -> List[Dict[str, Any]]:
-    """SerpAPI 검색"""
+    """SerpAPI 검색 (독립 실행용 - 호환성 유지)"""
+    async with httpx.AsyncClient(
+        timeout=1.8,
+        limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+    ) as client:
+        return await search_serpapi_with_client(query, client)
+
+async def search_serpapi_with_client(query: QuerySpec, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
+    """SerpAPI 검색 (공유 클라이언트 사용)"""
     from app.config import USE_MOCK_SEARCH
     
     api_key = os.getenv("SERPAPI_KEY")
@@ -109,35 +132,27 @@ async def search_serpapi(query: QuerySpec) -> List[Dict[str, Any]]:
     }
     
     try:
-        client = httpx.AsyncClient(timeout=1.8)
-        try:
-            response = await client.get("https://serpapi.com/search.json", params=params)
-            data = response.json()
-            
-            results = []
-            places = data.get("local_results", [])[:10]
-            
-            for place in places:
-                results.append({
-                    "source": "serpapi",
-                    "title": place.get("title", ""),
-                    "rating": place.get("rating"),
-                    "reviews": place.get("reviews"),
-                    "type": place.get("type", ""),
-                    "gps_coordinates": place.get("gps_coordinates"),
-                    "open_state": place.get("open_state"),
-                    "address": place.get("address", ""),
-                    "description": place.get("description", "")
-                })
-            
-            return results
-        finally:
-            try:
-                await client.aclose()
-            except RuntimeError:
-                # 이벤트 루프가 닫힌 경우 무시
-                pass
-            
+        response = await client.get("https://serpapi.com/search.json", params=params)
+        data = response.json()
+        
+        results = []
+        places = data.get("local_results", [])[:10]
+        
+        for place in places:
+            results.append({
+                "source": "serpapi",
+                "title": place.get("title", ""),
+                "rating": place.get("rating"),
+                "reviews": place.get("reviews"),
+                "type": place.get("type", ""),
+                "gps_coordinates": place.get("gps_coordinates"),
+                "open_state": place.get("open_state"),
+                "address": place.get("address", ""),
+                "description": place.get("description", "")
+            })
+        
+        return results
+        
     except Exception as e:
         print(f"SerpAPI error: {e}")
         return []
@@ -163,8 +178,11 @@ async def search_bing(query: QuerySpec) -> List[Dict[str, Any]]:
     }
     
     try:
-        client = httpx.AsyncClient(timeout=1.2)
-        try:
+        # httpx 클라이언트를 limits와 함께 생성하여 연결 풀을 안전하게 관리
+        async with httpx.AsyncClient(
+            timeout=1.2,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        ) as client:
             response = await client.get(
                 "https://api.bing.microsoft.com/v7.0/search",
                 headers=headers,
@@ -185,12 +203,6 @@ async def search_bing(query: QuerySpec) -> List[Dict[str, Any]]:
                 })
             
             return results
-        finally:
-            try:
-                await client.aclose()
-            except RuntimeError:
-                # 이벤트 루프가 닫힌 경우 무시
-                pass
             
     except Exception as e:
         print(f"Bing API error: {e}")

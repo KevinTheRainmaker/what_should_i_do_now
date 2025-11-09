@@ -167,8 +167,7 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
         
         print(f"   🔍 {item.name}: 검색 쿼리 = '{search_query}'")
         
-        client = httpx.AsyncClient(timeout=8.0)  # timeout 증가
-        try:
+        async with httpx.AsyncClient(timeout=8.0) as client:  # timeout 증가
             search_response = await client.get("https://serpapi.com/search.json", params=search_params)
             search_data = search_response.json()
             
@@ -413,13 +412,6 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
             
             print(f"   ✅ {item.name}: {len(reviews)}개 실제 리뷰 수집")
             return reviews[:5]  # 최대 5개 리뷰
-            
-        finally:
-            try:
-                await client.aclose()
-            except RuntimeError:
-                # 이벤트 루프가 닫힌 경우 무시
-                pass
                 
     except Exception as e:
         print(f"   ❌ {item.name} 리뷰 수집 실패: {e}")
