@@ -224,22 +224,22 @@ class QuestionStartRequest(BaseModel):
 
 @app.post("/api/questions/start")
 async def start_question_session(request: QuestionStartRequest):
-    """새로운 질의응답 세션 시작"""
+    """새로운 질의응답 세션 시작 - 첫 번째 질문만 생성"""
     session_id = str(uuid.uuid4())
-    
+
     # 현재 컨텍스트 정보 수집
     current_location = os.getenv("APP_LOCATION", "Barcelona")
     current_weather = os.getenv("APP_WEATHER", "☀️ 맑음 24°C")
     current_temp = os.getenv("APP_TEMP", "24")
     current_weather_condition = os.getenv("APP_WEATHER_CONDITION", "sunny")
-    
+
     # 사용자 선택 정보 (있는 경우)
     user_time = request.time_bucket if request else None
     user_budget = request.budget_level if request else None
     user_themes = request.themes if request else None
-    
-    # LLM이 컨텍스트 기반으로 질문 생성
-    questions = await generate_contextual_questions(
+
+    # 첫 번째 질문만 생성
+    first_question = await generate_first_question(
         location=current_location,
         weather=current_weather,
         temperature=current_temp,
@@ -248,27 +248,187 @@ async def start_question_session(request: QuestionStartRequest):
         user_budget=user_budget,
         user_themes=user_themes
     )
-    
+
     session = QuestionSession(
         session_id=session_id,
-        questions=questions,
+        questions=[first_question],  # 첫 번째 질문만 저장
         current_question_index=0,
         is_completed=False,
         created_at=datetime.now(),
         updated_at=datetime.now()
     )
-    
+
     question_sessions[session_id] = session
-    
+
     return QuestionResponse(
         session_id=session_id,
-        current_question=questions[0],
+        current_question=first_question,
         is_completed=False,
         progress=0,
         can_go_back=False
     )
 
-async def generate_contextual_questions(location: str, weather: str, temperature: str, weather_condition: str, 
+async def generate_first_question(location: str, weather: str, temperature: str, weather_condition: str,
+                                  user_time: str = None, user_budget: str = None, user_themes: str = None) -> Question:
+    """첫 번째 질문 생성 (컨텍스트 기반)"""
+    import openai
+    from openai import AsyncOpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        # API 키가 없으면 기본 질문 사용
+        return get_default_first_question(location, weather, user_themes)
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+
+        # 사용자 선택 정보를 프롬프트에 포함
+        user_info = ""
+        if user_time or user_budget or user_themes:
+            user_info = "\n**사용자 선택 정보:**\n"
+            if user_time:
+                user_info += f"- 선택한 시간: {user_time}\n"
+            if user_budget:
+                user_info += f"- 선택한 예산: {user_budget}\n"
+            if user_themes:
+                user_info += f"- 선택한 테마: {user_themes}\n"
+
+        prompt = f"""당신은 여행 추천 전문가입니다. 다음 컨텍스트를 바탕으로 사용자에게 첫 번째 질문을 생성해주세요.
+
+**현재 컨텍스트:**
+- 위치: {location}
+- 날씨: {weather} ({temperature}°C)
+- 날씨 조건: {weather_condition}{user_info}
+
+**질문 생성 규칙:**
+1. 현재 위치와 날씨를 고려한 질문
+2. 사용자의 구체적인 선호도를 파악할 수 있는 질문
+3. 자연스럽고 친근한 톤으로 작성
+4. 구체적인 예시를 포함하여 사용자가 쉽게 답변할 수 있도록 함
+5. 사용자가 이미 선택한 정보는 중복 질문하지 말고, 더 구체적인 세부사항을 묻는 질문 생성
+
+다음 JSON 형식으로 응답해주세요:
+{{
+  "question": "질문 내용"
+}}"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 여행 추천 전문가입니다. JSON 형식으로만 응답하세요."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=200
+        )
+
+        result = response.choices[0].message.content.strip()
+        print(f"🤖 LLM 첫 질문 생성 응답: {result}")
+
+        # JSON 파싱
+        import json
+        try:
+            data = json.loads(result)
+            return Question(
+                id=str(uuid.uuid4()),
+                question=data.get("question", ""),
+                order=1
+            )
+
+        except json.JSONDecodeError as e:
+            print(f"❌ LLM 응답 JSON 파싱 실패: {e}")
+            return get_default_first_question(location, weather, user_themes)
+
+    except Exception as e:
+        print(f"❌ LLM 질문 생성 실패: {e}")
+        return get_default_first_question(location, weather, user_themes)
+
+
+async def generate_next_question(location: str, weather: str, temperature: str, weather_condition: str,
+                                  previous_qa: List[QuestionAnswerPair], question_number: int,
+                                  user_time: str = None, user_budget: str = None, user_themes: str = None) -> Question:
+    """다음 질문 생성 (이전 답변 기반)"""
+    import openai
+    from openai import AsyncOpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        # API 키가 없으면 기본 질문 사용
+        return get_default_question_by_number(question_number, location, weather)
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+
+        # 이전 질문-답변 페어를 프롬프트에 포함
+        qa_history = "\n**이전 질문과 답변:**\n"
+        for qa in previous_qa:
+            qa_history += f"Q{qa.order}: {qa.question}\nA{qa.order}: {qa.answer}\n\n"
+
+        # 사용자 선택 정보
+        user_info = ""
+        if user_time or user_budget or user_themes:
+            user_info = "\n**사용자 선택 정보:**\n"
+            if user_time:
+                user_info += f"- 선택한 시간: {user_time}\n"
+            if user_budget:
+                user_info += f"- 선택한 예산: {user_budget}\n"
+            if user_themes:
+                user_info += f"- 선택한 테마: {user_themes}\n"
+
+        prompt = f"""당신은 여행 추천 전문가입니다. 이전 질문과 답변을 고려하여 다음 질문을 생성해주세요.
+
+**현재 컨텍스트:**
+- 위치: {location}
+- 날씨: {weather} ({temperature}°C)
+- 날씨 조건: {weather_condition}{user_info}
+
+{qa_history}
+
+**질문 생성 규칙:**
+1. 이전 답변에서 언급된 내용을 고려하여 더 구체적인 질문 생성
+2. 중복되지 않는 새로운 측면을 탐색
+3. 사용자의 답변 패턴과 선호도를 반영
+4. 자연스럽고 친근한 톤으로 작성
+5. 총 3개의 질문 중 {question_number}번째 질문임을 고려
+
+다음 JSON 형식으로 응답해주세요:
+{{
+  "question": "질문 내용"
+}}"""
+
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 여행 추천 전문가입니다. JSON 형식으로만 응답하세요."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=200
+        )
+
+        result = response.choices[0].message.content.strip()
+        print(f"🤖 LLM {question_number}번째 질문 생성 응답: {result}")
+
+        # JSON 파싱
+        import json
+        try:
+            data = json.loads(result)
+            return Question(
+                id=str(uuid.uuid4()),
+                question=data.get("question", ""),
+                order=question_number
+            )
+
+        except json.JSONDecodeError as e:
+            print(f"❌ LLM 응답 JSON 파싱 실패: {e}")
+            return get_default_question_by_number(question_number, location, weather)
+
+    except Exception as e:
+        print(f"❌ LLM 질문 생성 실패: {e}")
+        return get_default_question_by_number(question_number, location, weather)
+
+
+async def generate_contextual_questions(location: str, weather: str, temperature: str, weather_condition: str,
                                        user_time: str = None, user_budget: str = None, user_themes: str = None) -> List[Question]:
     """현재 컨텍스트를 기반으로 LLM이 질문을 동적으로 생성"""
     import openai
@@ -365,10 +525,40 @@ async def generate_contextual_questions(location: str, weather: str, temperature
         print(f"❌ LLM 질문 생성 실패: {e}")
         return get_default_questions(location, weather)
 
+def get_default_first_question(location: str, weather: str, user_themes: str = None) -> Question:
+    """기본 첫 번째 질문 (LLM 실패 시 사용)"""
+    if not user_themes:
+        question_text = f"{location}에서 어떤 종류의 활동을 하고 싶으신가요? (예: 문화체험, 휴식, 맛집탐방 등)"
+    else:
+        question_text = f"선택하신 {user_themes} 활동 중에서 어떤 분위기를 원하시나요?"
+
+    return Question(
+        id=str(uuid.uuid4()),
+        question=question_text,
+        order=1
+    )
+
+
+def get_default_question_by_number(question_number: int, location: str, weather: str) -> Question:
+    """기본 질문 (번호별)"""
+    if question_number == 2:
+        question_text = f"현재 {weather}인데, 실내/실외 활동 중 어떤 것을 선호하시나요?"
+    elif question_number == 3:
+        question_text = "혼자서 하시나요, 아니면 동행자와 함께 하시나요? 어떤 분위기를 원하시나요?"
+    else:
+        question_text = "추가로 고려할 사항이 있으신가요?"
+
+    return Question(
+        id=str(uuid.uuid4()),
+        question=question_text,
+        order=question_number
+    )
+
+
 def get_default_questions(location: str, weather: str, user_time: str = None, user_budget: str = None, user_themes: str = None) -> List[Question]:
-    """기본 질문들 (LLM 실패 시 사용)"""
+    """기본 질문들 (LLM 실패 시 사용) - 하위 호환성 유지"""
     questions = []
-    
+
     # 사용자 선택 정보에 따라 질문 조정
     if not user_themes:
         questions.append(Question(
@@ -382,42 +572,42 @@ def get_default_questions(location: str, weather: str, user_time: str = None, us
             question=f"선택하신 {user_themes} 활동 중에서 어떤 분위기를 원하시나요?",
             order=1
         ))
-    
+
     questions.append(Question(
         id=str(uuid.uuid4()),
         question=f"현재 {weather}인데, 실내/실외 활동 중 어떤 것을 선호하시나요?",
         order=2
     ))
-    
+
     questions.append(Question(
         id=str(uuid.uuid4()),
         question="혼자서 하시나요, 아니면 함께 하시나요?",
         order=3
     ))
-    
+
     return questions
 
 @app.post("/api/questions/answer", response_model=QuestionResponse)
 async def answer_question(request: QuestionRequest):
-    """질문에 답변하고 다음 질문으로 이동"""
+    """질문에 답변하고 다음 질문 생성"""
     if request.session_id not in question_sessions:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
-    
+
     session = question_sessions[request.session_id]
-    
+
     # 현재 질문에 답변 저장
     for question in session.questions:
         if question.id == request.question_id:
             question.answer = request.answer
             break
-    
-    # 다음 질문으로 이동
-    session.current_question_index += 1
-    session.updated_at = datetime.now()
-    
-    # 모든 질문이 완료되었는지 확인
-    if session.current_question_index >= len(session.questions):
+
+    # 다음 질문 번호 계산
+    next_question_number = len(session.questions) + 1
+
+    # 총 3개 질문이면 완료
+    if next_question_number > 3:
         session.is_completed = True
+        session.updated_at = datetime.now()
         return QuestionResponse(
             session_id=session.session_id,
             current_question=None,
@@ -425,14 +615,44 @@ async def answer_question(request: QuestionRequest):
             progress=100,
             can_go_back=True
         )
-    
-    # 다음 질문 반환
-    current_question = session.questions[session.current_question_index]
-    progress = int((session.current_question_index / len(session.questions)) * 100)
-    
+
+    # 컨텍스트 정보
+    current_location = os.getenv("APP_LOCATION", "Barcelona")
+    current_weather = os.getenv("APP_WEATHER", "☀️ 맑음 24°C")
+    current_temp = os.getenv("APP_TEMP", "24")
+    current_weather_condition = os.getenv("APP_WEATHER_CONDITION", "sunny")
+
+    # 이전 질문-답변 페어 생성
+    previous_qa = []
+    for q in session.questions:
+        if q.answer:
+            previous_qa.append(QuestionAnswerPair(
+                question=q.question,
+                answer=q.answer,
+                order=q.order
+            ))
+
+    # 다음 질문 생성 (이전 답변 기반)
+    next_question = await generate_next_question(
+        location=current_location,
+        weather=current_weather,
+        temperature=current_temp,
+        weather_condition=current_weather_condition,
+        previous_qa=previous_qa,
+        question_number=next_question_number
+    )
+
+    # 세션에 질문 추가
+    session.questions.append(next_question)
+    session.current_question_index = len(session.questions) - 1
+    session.updated_at = datetime.now()
+
+    # 진행률 계산 (3개 질문 기준)
+    progress = int((next_question_number - 1) / 3 * 100)
+
     return QuestionResponse(
         session_id=session.session_id,
-        current_question=current_question,
+        current_question=next_question,
         is_completed=False,
         progress=progress,
         can_go_back=True

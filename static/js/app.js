@@ -315,8 +315,8 @@ class HybridInterface {
 
             this.showLoading();
 
-            // 단계별 진행 상황 시뮬레이션
-            this.simulateProgress();
+            // 단계별 진행 상황 시뮬레이션 (await 제거 - 백그라운드에서 실행)
+            const progressPromise = this.simulateProgress();
 
             const response = await fetch('/api/recommend', {
                 method: 'POST',
@@ -327,11 +327,20 @@ class HybridInterface {
             });
 
             const data = await response.json();
-            this.displayResults(data);
+
+            // API 응답이 왔으면 프로그레스 시뮬레이션 중단하고 결과 표시
+            this.stopProgressSimulation();
+            await this.completeAllSteps(); // 모든 단계 완료 표시
+
+            // 약간의 딜레이 후 결과 표시
+            setTimeout(() => {
+                this.displayResults(data);
+            }, 300);
 
         } catch (error) {
             console.error('추천 생성 실패:', error);
             alert('추천을 생성할 수 없습니다. 다시 시도해주세요.');
+            this.stopProgressSimulation();
             this.hideLoading();
         }
     }
@@ -400,8 +409,8 @@ class HybridInterface {
 
         this.showLoading();
 
-        // 단계별 진행 상황 시뮬레이션
-        this.simulateProgress();
+        // 단계별 진행 상황 시뮬레이션 (백그라운드에서 실행)
+        const progressPromise = this.simulateProgress();
 
         try {
             const response = await fetch('/api/recommend', {
@@ -413,11 +422,20 @@ class HybridInterface {
             });
 
             const data = await response.json();
-            this.displayResults(data);
+
+            // API 응답이 왔으면 프로그레스 시뮬레이션 중단하고 결과 표시
+            this.stopProgressSimulation();
+            await this.completeAllSteps(); // 모든 단계 완료 표시
+
+            // 약간의 딜레이 후 결과 표시
+            setTimeout(() => {
+                this.displayResults(data);
+            }, 300);
 
         } catch (error) {
             console.error('추천 생성 실패:', error);
             alert('추천을 생성할 수 없습니다. 다시 시도해주세요.');
+            this.stopProgressSimulation();
             this.hideLoading();
         }
     }
@@ -491,7 +509,14 @@ class HybridInterface {
             { step: 9, delay: 800, text: '✨ 최종 결과 생성 중...' }            // generate_fallback
         ];
 
+        this.progressRunning = true;
+        this.currentProgressStep = 0;
+
         for (const { step, delay, text } of steps) {
+            if (!this.progressRunning) break; // 중단 요청이 있으면 멈춤
+
+            this.currentProgressStep = step;
+
             // 현재 단계 활성화
             this.updateStep(step, 'active');
 
@@ -505,8 +530,22 @@ class HybridInterface {
             // 지연 시간 대기
             await new Promise(resolve => setTimeout(resolve, delay));
 
+            if (!this.progressRunning) break; // 대기 후에도 확인
+
             // 단계 완료 표시
             this.updateStep(step, 'completed');
+        }
+    }
+
+    stopProgressSimulation() {
+        this.progressRunning = false;
+    }
+
+    async completeAllSteps() {
+        // 현재 단계부터 9단계까지 빠르게 완료 표시
+        for (let step = this.currentProgressStep || 1; step <= 9; step++) {
+            this.updateStep(step, 'completed');
+            await new Promise(resolve => setTimeout(resolve, 50)); // 빠른 애니메이션
         }
     }
 
