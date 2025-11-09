@@ -478,16 +478,17 @@ class HybridInterface {
     }
 
     async simulateProgress() {
+        // companion_graph 워크플로우에 맞춘 실제 처리 시간 기반 시뮬레이션
         const steps = [
-            { step: 1, delay: 800, text: '컨텍스트 초기화 중...' },
-            { step: 2, delay: 1500, text: '검색 쿼리 생성 중...' },
-            { step: 3, delay: 3000, text: '장소 검색 및 정규화 중...' },
-            { step: 4, delay: 2000, text: '이동시간 계산 중...' },
-            { step: 5, delay: 1500, text: '시간 적합도 분류 중...' },
-            { step: 6, delay: 2000, text: '활동 랭킹 및 선별 중...' },
-            { step: 7, delay: 2500, text: 'LLM 평가 및 선별 중...' },
-            { step: 8, delay: 4000, text: '리뷰 수집 및 요약 중...' },
-            { step: 9, delay: 1000, text: '최종 추천 완성 중...' }
+            { step: 1, delay: 600, text: '🔧 컨텍스트 초기화 중...' },           // initialize_context
+            { step: 2, delay: 1800, text: '🤖 검색 쿼리 생성 중...' },          // generate_queries (LLM 호출)
+            { step: 3, delay: 3500, text: '🔍 장소 검색 및 정규화 중...' },     // search_and_normalize (API 호출)
+            { step: 4, delay: 2200, text: '🚗 이동시간 필터링 중...' },         // filter_by_travel_time (API 호출)
+            { step: 5, delay: 800, text: '⏰ 시간 적합도 분류 중...' },          // classify_time
+            { step: 6, delay: 1000, text: '🏆 활동 랭킹 중...' },               // rank_activities
+            { step: 7, delay: 3000, text: '🧠 AI 평가 및 선별 중...' },         // llm_evaluate (LLM 호출)
+            { step: 8, delay: 5000, text: '💬 리뷰 수집 및 요약 중...' },       // fetch_reviews (API + LLM)
+            { step: 9, delay: 800, text: '✨ 최종 결과 생성 중...' }            // generate_fallback
         ];
 
         for (const { step, delay, text } of steps) {
