@@ -13,11 +13,12 @@ from pydantic import BaseModel
 import json
 import asyncio
 import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+from app.nodes.colored_log_handler import ColoredLogHandler
+logging.basicConfig(level=logging.DEBUG, handlers=[ColoredLogHandler()])
 logger = logging.getLogger(__name__)
 
 from app.types.requests import RecommendRequest, RecommendResponse, HealthResponse
-from app.types.activity import Preferences
+from app.types.activity import Preferences, ActivityItem
 from app.graph.companion_graph import companion_graph
 from app.config import validate_env, update_default_context
 
@@ -138,6 +139,71 @@ async def health_check():
     )
 
 
+def remove_duplicate_items(items: List[ActivityItem]) -> List[ActivityItem]:
+    """중복된 장소를 제거하는 함수
+    
+    중복 판단 기준:
+    1. place_id가 같고 둘 다 None이 아닌 경우
+    2. 이름이 정확히 같은 경우
+    3. 이름이 유사하고 좌표가 매우 가까운 경우 (100m 이내)
+    """
+    if not items:
+        return items
+    
+    seen_place_ids = set()
+    seen_names = set()
+    unique_items = []
+    
+    for item in items:
+        is_duplicate = False
+        
+        # 1. place_id로 중복 확인 (가장 정확)
+        if item.place_id and item.place_id in seen_place_ids:
+            logger.debug(f"중복 제거: {item.name} (place_id: {item.place_id})")
+            is_duplicate = True
+        elif item.place_id:
+            seen_place_ids.add(item.place_id)
+        
+        # 2. 이름으로 중복 확인
+        if not is_duplicate:
+            name_lower = item.name.lower().strip()
+            if name_lower in seen_names:
+                logger.debug(f"중복 제거: {item.name} (이름 중복)")
+                is_duplicate = True
+            else:
+                seen_names.add(name_lower)
+        
+        # 3. 이름이 유사하고 좌표가 가까운 경우 중복 확인
+        if not is_duplicate and item.coords:
+            for existing_item in unique_items:
+                if existing_item.coords:
+                    # 이름 유사도 체크 (한 단어 이상 공통)
+                    existing_name_words = set(existing_item.name.lower().split())
+                    current_name_words = set(name_lower.split())
+                    common_words = existing_name_words.intersection(current_name_words)
+                    
+                    # 공통 단어가 있고, 좌표가 100m 이내인 경우
+                    if len(common_words) > 0 and len(common_words) >= min(2, len(existing_name_words), len(current_name_words)):
+                        # 거리 계산 (간단한 하버사인 공식 근사)
+                        lat_diff = abs(item.coords.lat - existing_item.coords.lat)
+                        lng_diff = abs(item.coords.lng - existing_item.coords.lng)
+                        # 대략적인 거리 (위도 1도 ≈ 111km, 경도는 위도에 따라 다름)
+                        distance_approx = ((lat_diff * 111000) ** 2 + (lng_diff * 111000 * abs(item.coords.lat / 90)) ** 2) ** 0.5
+                        
+                        if distance_approx < 100:  # 100m 이내
+                            logger.debug(f"중복 제거: {item.name} (유사 이름 + 가까운 위치: {distance_approx:.0f}m)")
+                            is_duplicate = True
+                            break
+        
+        if not is_duplicate:
+            unique_items.append(item)
+    
+    if len(items) != len(unique_items):
+        logger.info(f"중복 제거: {len(items)}개 → {len(unique_items)}개")
+    
+    return unique_items
+
+
 @app.get("/api/context")
 async def get_context():
     """현재 위치와 날씨 정보를 반환하는 엔드포인트"""
@@ -248,6 +314,9 @@ async def recommend_activities_stream(request: RecommendRequest):
                 # LLM 평가 결과가 있으면 사용, 없으면 기본 결과 사용
                 final_items = result.get("llm_selected_items", result["ranked_items"])
                 
+                # 중복 제거
+                final_items = remove_duplicate_items(final_items)
+                
                 # Pydantic 모델을 dict로 변환
                 def to_dict(obj):
                     if hasattr(obj, "dict"):
@@ -341,6 +410,9 @@ async def recommend_activities(request: RecommendRequest):
         
         # LLM 평가 결과가 있으면 사용, 없으면 기본 결과 사용
         final_items = result.get("llm_selected_items", result["ranked_items"])
+        
+        # 중복 제거
+        final_items = remove_duplicate_items(final_items)
         
         response = RecommendResponse(
             session_id=result["session_id"],
@@ -902,6 +974,9 @@ async def get_recommendations_from_questions(session_id: str):
         
         # LLM 평가 결과가 있으면 사용, 없으면 기본 결과 사용
         final_items = result.get("llm_selected_items", result["ranked_items"])
+        
+        # 중복 제거
+        final_items = remove_duplicate_items(final_items)
         
         response = RecommendResponse(
             session_id=result["session_id"],
