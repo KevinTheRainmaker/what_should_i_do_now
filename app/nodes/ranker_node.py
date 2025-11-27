@@ -2,33 +2,37 @@ import math
 from typing import Dict, Any, List
 from app.types.activity import ActivityItem, PriceLevel
 from app.utils.korean_text import generate_reason_text
+from app.nodes.colored_log_handler import ColoredLogHandler
+import logging
+logging.basicConfig(level=logging.DEBUG, handlers=[ColoredLogHandler()])
+logger = logging.getLogger(__name__)
 
 def rank_activities(state: Dict[str, Any]) -> Dict[str, Any]:
-    """활동 랭킹 노드"""
-    print("🏆 [에이전트] 5단계: 활동 랭킹 및 선별 시작")
+    logger.info("Step 5: 활동 랭킹 및 선별 시작")
     
     activity_items: List[ActivityItem] = state.get("activity_items", [])
     preferences = state["preferences"]
     context = state["context"]
     
     if not activity_items:
-        print("   ⚠️  활동 아이템이 없음 - 빈 결과 반환")
+        logger.warning("활동 아이템이 없음 - 빈 결과 반환")
         state["ranked_items"] = []
         return state
     
-    print(f"   📊 {len(activity_items)}개 아이템 점수 계산 중...")
+    logger.info(f"{len(activity_items)}개 아이템 점수 계산 중...")
     
     # 각 아이템에 점수 계산
     scored_items = []
     for i, item in enumerate(activity_items, 1):
         score = calculate_total_score(item, preferences, context)
+        logger.debug(item, preferences, context)
         item.total_score = score
         scored_items.append(item)
-        print(f"      {i}. {item.name}: {score:.1f}점")
+        logger.info(f"      {i}. {item.name}: {score:.1f}점")
     
     # 점수 순으로 정렬
     scored_items.sort(key=lambda x: x.total_score, reverse=True)
-    print("   📈 점수순 정렬 완료")
+    logger.info("점수순 정렬 완료")
     
     # 시간 제약 사전 필터링 (이동시간 + 총 시간 제한)
     time_bucket_limit = state.get("time_bucket_limit")
@@ -44,7 +48,7 @@ def rank_activities(state: Dict[str, Any]) -> Dict[str, Any]:
     }
     max_travel_time = max_travel_time_by_bucket.get(time_bucket, 30)
     
-    print(f"   ⏰ 시간 제약 필터링 - 이동시간 {max_travel_time}분 이하, 총시간 {time_bucket_limit}분 이하")
+    logger.info(f"시간 제약 필터링 - 이동시간 {max_travel_time}분 이하, 총시간 {time_bucket_limit}분 이하")
     time_filtered = []
     
     for item in scored_items:
@@ -64,34 +68,34 @@ def rank_activities(state: Dict[str, Any]) -> Dict[str, Any]:
         
         if travel_time_ok and total_time_ok:
             time_filtered.append(item)
-            print(f"      ✅ {item.name}: 이동{travel_time}분, 총{total_time}분 - 포함")
+            logger.info(f"      ✅ {item.name}: 이동{travel_time}분, 총{total_time}분 - 포함")
         else:
             reason = []
             if not travel_time_ok:
                 reason.append(f"이동시간 초과({travel_time}분>{max_travel_time}분)")
             if not total_time_ok:
                 reason.append(f"총시간 초과({total_time}분>{time_bucket_limit}분)")
-            print(f"      ❌ {item.name}: {', '.join(reason)} - 제외")
+            logger.info(f"      ❌ {item.name}: {', '.join(reason)} - 제외")
     
-    print(f"   ⏰ 시간 필터링 후: {len(time_filtered)}개 남음")
+    logger.info(f"시간 필터링 후: {len(time_filtered)}개 남음")
     scored_items = time_filtered
     
     # 제약 조건 적용 (체인 중복 금지, 영업 종료 패널티 등)
-    print("   🔍 제약 조건 적용 중 (체인 중복 제거, 카테고리 다양성)...")
+    logger.info("제약 조건 적용 중 (체인 중복 제거, 카테고리 다양성)...")
     filtered_items = apply_constraints(scored_items)
     
     # 상위 4개 선택
     top_items = filtered_items[:4]
-    print(f"   🎯 상위 {len(top_items)}개 선별 완료:")
+    logger.info(f"상위 {len(top_items)}개 선별 완료:")
     
     # 추천 이유 텍스트 생성
     for i, item in enumerate(top_items, 1):
         item.reason_text = generate_reason_text(item, preferences)
-        print(f"      {i}. {item.name} ({item.total_score:.1f}점, {item.category.value})")
-        print(f"         → {item.reason_text}")
+        logger.info(f"      {i}. {item.name} ({item.total_score:.1f}점, {item.category.value})")
+        logger.info(f"         → {item.reason_text}")
     
     state["ranked_items"] = top_items
-    print("   ✅ 랭킹 완료\n")
+    logger.info("랭킹 완료")
     return state
 
 def calculate_total_score(item: ActivityItem, preferences, context) -> float:

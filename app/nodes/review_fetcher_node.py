@@ -68,8 +68,14 @@ async def fetch_and_summarize_reviews(state: Dict[str, Any]) -> Dict[str, Any]:
                     
                     summary, price_level, price_reason = await curate_places(client, item.name, reviews, natural_input)
                     item.review_summary = summary
-                    item.price_level = price_level
-                    item.reason_text = price_reason
+                    if price_level and price_level in ["low", "mid", "high", "unknown"]:
+                        from app.types.activity import PriceLevel
+                        item.price_level = PriceLevel(price_level)
+                        item.budget_hint = PriceLevel(price_level)
+                    # reason_text는 LLM 평가 노드에서 설정한 추천 문구를 유지
+                    # 가격 정보가 있고 기존 reason_text가 없을 때만 설정
+                    if price_reason and price_reason.strip() and (not item.reason_text or not item.reason_text.strip()):
+                        item.reason_text = price_reason
                     item.top_reviews = reviews[:3]
                     
                     logger.info(f"      {i+1}. {item.name}: {len(reviews)}개 리뷰 요약 완료")
@@ -117,6 +123,8 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
     
     try:
         current_location = os.getenv("APP_LOCATION")
+        current_lat = os.getenv("APP_LAT", "41.4095")
+        current_lng = os.getenv("APP_LNG", "2.2184")
         
         if hasattr(item, 'address') and item.address:
             search_query = f'{item.name}, {item.address}'
@@ -129,7 +137,7 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
             "q": search_query,
             "api_key": api_key,
             "type": "search",
-            "ll": f"@{current_location.lat},{current_location.lng},12z"
+            "ll": f"@{current_lat},{current_lng},12z"
         }
         
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -187,7 +195,7 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
                             item.coords = Coordinates(lat=float(lat), lng=float(lng))
                             logger.info(f"{item.name}: Found coordinates - {lat}, {lng}")
                             
-                            curr_coords = Coordinates(lat=current_location.lat, lng=current_location.lng)
+                            curr_coords = Coordinates(lat=float(current_lat), lng=float(current_lng))
                             try:
                                 import asyncio
                                 
@@ -288,22 +296,29 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
                 if available_keys:
                     logger.debug(f"{item.name} photo related keys: {available_keys}")
             
-            for key in ["place_id", "data_id", "cid", "place_data_id"]:
-                if key in first_result:
-                    place_id = first_result[key]
-                    logger.info(f"{item.name}: Found place_id {place_id} in {key}")
-                    
-                    item.place_id = place_id
-                    current_location = os.getenv("APP_LOCATION")
-                    item.directions_link = generate_directions_link(item.coords, item.name, origin_param=current_location)
-                    logger.info(f"{item.name}: Updated directions link (origin: {current_location})")
-                    break
+            # 이미 item에 place_id가 있으면 사용
+            if hasattr(item, 'place_id') and item.place_id:
+                place_id = item.place_id
+                logger.info(f"{item.name}: Using existing place_id {place_id}")
+            else:
+                # place_id 찾기
+                for key in ["place_id", "data_id", "cid", "place_data_id"]:
+                    if key in first_result:
+                        place_id = first_result[key]
+                        logger.info(f"{item.name}: Found place_id {place_id} in {key}")
+                        
+                        item.place_id = place_id
+                        current_location = os.getenv("APP_LOCATION")
+                        if item.coords:
+                            item.directions_link = generate_directions_link(item.coords, item.name, origin_param=current_location)
+                            logger.info(f"{item.name}: Updated directions link (origin: {current_location})")
+                        break
             
             if not place_id:
                 logger.error(f"{item.name}: place_id not found")
                 logger.debug(f"{item.name} first result keys: {list(first_result.keys())}")
                 if first_result:
-                    logger.debug(f"{item.name} first result: {first_result}")
+                    logger.debug(f"{item.name} first result sample: {str(first_result)[:500]}")
                 return []
             
             review_params = {
@@ -322,8 +337,22 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
                 return []
             
             reviews = []
-            review_items = review_data.get("reviews", [])
-            logger.info(f"{item.name}: API returned {len(review_items)} reviews")
+            # 다양한 키에서 리뷰 찾기
+            review_items = (review_data.get("reviews", []) or 
+                           review_data.get("local_results", []) or
+                           review_data.get("place_results", {}).get("reviews", []) or
+                           [])
+            
+            logger.info(f"{item.name}: API returned {len(review_items)} review items")
+            
+            # review_items가 리스트가 아닌 경우 처리
+            if not isinstance(review_items, list):
+                logger.warning(f"{item.name}: review_items is not a list: {type(review_items)}")
+                # dict인 경우 values()를 시도
+                if isinstance(review_items, dict):
+                    review_items = list(review_items.values())
+                else:
+                    review_items = []
             
             for i, review in enumerate(review_items):
                 snippet = review.get("snippet", "").strip()
@@ -336,19 +365,19 @@ async def fetch_place_reviews(item: ActivityItem) -> List[str]:
         logger.error(f"{item.name}: Review collection failed - {e}")
         return []
 
-async def curate_places(client: AsyncOpenAI, place_name: str, reviews: List[str], natural_input: Optional[str] = None) -> Tuple[str, str]:
+async def curate_places(client: AsyncOpenAI, place_name: str, reviews: List[str], natural_input: Optional[str] = None) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     if not reviews:
-        return "리뷰가 없습니다.", "unknown"
+        return "리뷰가 없습니다.", "unknown", None
     
     # 각 리뷰의 길이를 제한
     truncated_reviews = [review[:500] + "..." if len(review) > 500 else review for review in reviews[:5]]
     combined_reviews = "\n\n".join(truncated_reviews)
 
     price_level, reason = await analyze_price_level(client, place_name, combined_reviews)
-    summary = await summarize_reviews(client, place_name, combined_reviews, natural_input, price_level, reason)
+    summary = await summarize_reviews(client, place_name, combined_reviews, natural_input)
     return summary, price_level, reason
 
-async def analyze_price_level(client: AsyncOpenAI, place_name: str, combined_reviews: str) -> str:
+async def analyze_price_level(client: AsyncOpenAI, place_name: str, combined_reviews: str) -> Tuple[Optional[str], Optional[str]]:
     prompt = f"""다음은 "{place_name}"에 대한 구글맵 리뷰들입니다.
     리뷰들:
     {combined_reviews}

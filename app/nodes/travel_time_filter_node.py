@@ -40,7 +40,7 @@ def calculate_travel_time_filter(state: Dict[str, Any]) -> Dict[str, Any]:
     min_travel_time = time_limit["travel_min"]
     
     logger.info(f"시간 제한: {time_bucket} → 이동시간 {min_travel_time}-{max_travel_time}분")
-    logger.info(f"기준 위치: {os.getenv('APP_LOCATION')}")
+    logger.info(f"기준 위치: {os.getenv('APP_LOCATION', 'Centre de Convencions Internacional de Barcelona')}")
     logger.info(f"총 {len(items)}개 장소의 이동시간 계산 중...")
     
     # 비동기 이동시간 계산을 위한 함수
@@ -81,7 +81,7 @@ async def calculate_travel_times_batch(items: List[ActivityItem], max_travel_tim
     """배치로 이동시간 계산 및 필터링"""
     
     # 현재 설정된 위치를 출발지로 사용
-    origin_name = os.getenv("APP_LOCATION")
+    origin_name = os.getenv("APP_LOCATION", "Centre de Convencions Internacional de Barcelona")
     filtered_items = []
     
     # 병렬 처리를 위해 아이템들을 작은 배치로 분할
@@ -102,13 +102,7 @@ async def calculate_travel_times_batch(items: List[ActivityItem], max_travel_tim
         for item, result in zip(batch, batch_results):
             if isinstance(result, ActivityItem):
                 filtered_items.append(result)
-                # 이동시간 점수에 따라 로그 메시지 구분
-                if result.time_fitness_score == 20.0:
-                    logger.info(f"{result.name}: 도보 {result.walking_time_min}분 - 시간 적합도 20점")
-                elif result.time_fitness_score == 15.0:
-                    logger.info(f"{result.name}: 대중교통 {result.transit_time_min}분 - 시간 적합도 15점")
-                elif result.time_fitness_score == 10.0:
-                    logger.info(f"{result.name}: 차량 {result.driving_time_min}분 - 시간 적합도 10점")
+                logger.info(f"{result.name}: {result.travel_time_min}분 - 시간 적합도 {result.time_fitness_score}점")
             elif isinstance(result, Exception):
                 logger.error(f"{item.name}: 계산 실패 - {result}")
             else:
@@ -120,13 +114,6 @@ async def calculate_travel_times_batch(items: List[ActivityItem], max_travel_tim
     return filtered_items
 
 async def calculate_single_item_travel_time(origin_name: str, destination_name: str, item: ActivityItem, max_travel_time: int) -> ActivityItem:
-    """단일 아이템의 이동시간 계산 및 필터링
-    
-    필터링 및 점수 조정 규칙:
-    1. 도보 시간이 제한 시간 이내면 최상점 (time_fitness_score = 20)
-    2. 도보로는 제한 시간 오버지만 차량이나 대중교통으로는 제한 시간 이내면 중간점수 (time_fitness_score = 10)
-    3. 모든 방법에서 제한시간 오버면 제외 (None 반환)
-    """
     try:
         # Google Routes API로 이동시간 계산
         travel_times = await get_multi_modal_travel_times_by_name(origin_name, destination_name)

@@ -5,6 +5,11 @@ import httpx
 import json
 from app.types.activity import Coordinates
 
+from app.nodes.colored_log_handler import ColoredLogHandler
+import logging
+logging.basicConfig(level=logging.DEBUG, handlers=[ColoredLogHandler()])
+logger = logging.getLogger(__name__)
+
 def calculate_distance_meters(coord1: Coordinates, coord2: Coordinates) -> int:
     """두 좌표 간 거리를 미터로 계산"""
     distance_km = haversine(
@@ -22,21 +27,26 @@ async def get_multi_modal_travel_times(origin_coords: Coordinates, dest_coords: 
     """모든 교통수단별 이동시간과 거리를 계산 (Google Routes API 우선 사용)"""
     # Google Routes API 우선 시도
     google_api_key = os.getenv("GOOGLE_API_KEY")
+
     if google_api_key:
-        print(f"   🌐 Google Routes API 사용")
+        print('#'*100)
+        print(f"Google Routes API 사용: {await get_google_routes_travel_times(origin_coords, dest_coords)}")
+        print('#'*100)
         return await get_google_routes_travel_times(origin_coords, dest_coords)
     
     # Google API가 없으면 SerpAPI 사용 (기존 로직)
     serpapi_key = os.getenv("SERPAPI_KEY")
-    
+    print('#'*100)
+    print(f"Google Routes API 미사용")
+    print('#'*100)    
     # 기본 거리 계산
     distance = calculate_distance_meters(origin_coords, dest_coords)
     
     # 기본값 설정
     result = {
-        "walking": {"time_min": calculate_travel_time_minutes(distance), "distance_m": distance},
-        "driving": {"time_min": max(3, int(distance / 500)), "distance_m": distance},  # 평균 30km/h
-        "transit": {"time_min": max(5, int(distance / 300)), "distance_m": distance}   # 평균 18km/h + 대기시간
+        "walking": {"time_min": int(distance / 80), "distance_m": distance},
+        "driving": {"time_min": int(distance / 500), "distance_m": distance},
+        "transit": {"time_min": int(distance / 300), "distance_m": distance}
     }
     
     if not serpapi_key:
@@ -124,12 +134,12 @@ async def get_travel_time_by_place_name(origin_name: str, destination_name: str,
     """장소 이름으로 Google Routes API를 통해 이동시간 계산"""
     api_key = os.getenv("GOOGLE_API_KEY")
     
-    print(f"   🔑 API 키 확인: {'있음' if api_key else '없음'}")
+    logger.warning(f"   🔑 API 키 확인: {'있음' if api_key else '없음'}")
     if api_key:
-        print(f"      길이: {len(api_key)}, 시작: {api_key[:10]}...")
+        logger.warning(f"      길이: {len(api_key)}, 시작: {api_key[:10]}...")
     
     if not api_key:
-        print(f"   ⚠️ Google API 키 없음 - 기본값 사용")
+        logger.warning(f"   ⚠️ Google API 키 없음 - 기본값 사용")
         return None
     
     try:
@@ -154,22 +164,22 @@ async def get_travel_time_by_place_name(origin_name: str, destination_name: str,
         if travel_mode == "DRIVE":
             payload["routingPreference"] = "TRAFFIC_AWARE"
         
-        print(f"   🌐 Routes API 요청:")
-        print(f"      URL: {url}")
-        print(f"      출발지: {origin_name}")
-        print(f"      도착지: {destination_name}")
-        print(f"      교통수단: {travel_mode}")
-        print(f"      헤더: {dict(headers)}")
+        logger.warning(f"   🌐 Routes API 요청:")
+        logger.warning(f"      URL: {url}")
+        logger.warning(f"      출발지: {origin_name}")
+        logger.warning(f"      도착지: {destination_name}")
+        logger.warning(f"      교통수단: {travel_mode}")
+        logger.warning(f"      헤더: {dict(headers)}")
         
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, headers=headers, json=payload)
             
-            print(f"   📊 응답 상태: {response.status_code}")
-            print(f"   📊 응답 헤더: {dict(response.headers)}")
+            logger.warning(f"   📊 응답 상태: {response.status_code}")
+            logger.warning(f"   📊 응답 헤더: {dict(response.headers)}")
             
             if response.status_code == 200:
                 data = response.json()
-                print(f"   ✅ 성공 응답: {json.dumps(data, indent=2)[:200]}...")
+                logger.warning(f"   ✅ 성공 응답: {json.dumps(data, indent=2)[:200]}...")
                 routes = data.get("routes", [])
                 
                 if routes and len(routes) > 0:
@@ -316,40 +326,90 @@ async def get_multi_modal_travel_times_by_name(origin_name: str, destination_nam
     
     print(f"   🔄 이동시간 계산 시작: {destination_name}")
     
-    # Google APIs 시도 (Routes API → Directions API)
-    api_success = False
+    # 기본값 설정
     result = {
         "walking": {"time_min": 25, "distance_m": 2000},
         "driving": {"time_min": 8, "distance_m": 2000},
         "transit": {"time_min": 15, "distance_m": 2000}
     }
     
-    # 1단계: Routes API 시도 (403 빌링 오류 예상)
-    try:
-        walking_time = await get_travel_time_by_place_name(origin_name, destination_name, "WALK")
-        if walking_time and walking_time > 0:
-            result["walking"]["time_min"] = walking_time
-            # 성공하면 다른 모드도 시도하지만, 시간 단축을 위해 하나만 성공해도 사용
-            api_success = True
-            print(f"   ✅ Routes API 성공: 도보 {walking_time}분")
-    except Exception as e:
-        print(f"   ❌ Routes API 실패 (예상됨): {str(e)[:50]}...")
+    # Google Routes API로 모든 교통수단 계산
+    travel_modes = {
+        "walking": "WALK",
+        "driving": "DRIVE",
+        "transit": "TRANSIT"
+    }
     
-    # 2단계: Directions API 시도 (REQUEST_DENIED 예상)  
-    if not api_success:
-        try:
-            walking_time = await get_travel_time_by_directions_api(origin_name, destination_name, "walking")
-            if walking_time and walking_time > 0:
-                result["walking"]["time_min"] = walking_time
-                api_success = True
-                print(f"   ✅ Directions API 성공: 도보 {walking_time}분")
-        except Exception as e:
-            print(f"   ❌ Directions API 실패 (예상됨): {str(e)[:50]}...")
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        print(f"   ⚠️ Google API 키 없음 - 기본값 사용")
+        return result
     
-    # 3단계: 지능형 추정 (API 실패 시)
-    if not api_success:
-        print(f"   🧠 Google APIs 모두 실패, 지능형 추정 사용")
-        result = await get_travel_time_by_distance_estimation(origin_name, destination_name)
+    url = "https://routes.googleapis.com/directions/v2:computeRoutes"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters"
+    }
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for mode_key, api_mode in travel_modes.items():
+            try:
+                payload = {
+                    "origin": {
+                        "address": origin_name
+                    },
+                    "destination": {
+                        "address": destination_name
+                    },
+                    "travelMode": api_mode
+                }
+                
+                # routingPreference는 DRIVE 모드에서만 설정 가능
+                if api_mode == "DRIVE":
+                    payload["routingPreference"] = "TRAFFIC_AWARE"
+                
+                response = await client.post(url, headers=headers, json=payload)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    routes = data.get("routes", [])
+                    
+                    if routes and len(routes) > 0:
+                        route = routes[0]
+                        duration = route.get("duration", {})
+                        distance_meters = route.get("distanceMeters", 0)
+                        
+                        if duration:
+                            # duration은 직접 "1519s" 형태의 문자열
+                            if isinstance(duration, str):
+                                duration_str = duration
+                            else:
+                                duration_str = duration.get("duration", "0s")
+                            duration_seconds = int(duration_str.replace("s", ""))
+                            travel_time_min = max(1, int(duration_seconds / 60))
+                            
+                            result[mode_key] = {
+                                "time_min": travel_time_min,
+                                "distance_m": distance_meters or result[mode_key]["distance_m"]
+                            }
+                            print(f"   🌐 Routes API ({api_mode}): {origin_name} → {destination_name} = {travel_time_min}분, {distance_meters}m")
+                        else:
+                            print(f"   ⚠️ Routes API ({api_mode}): duration 정보 없음")
+                else:
+                    print(f"   ❌ Routes API ({api_mode}) 오류: {response.status_code}")
+                    if response.status_code == 403:
+                        print(f"      API 키 권한 확인 필요")
+                    elif response.status_code == 400:
+                        try:
+                            error_data = response.json()
+                            print(f"      요청 형식 오류: {error_data.get('error', {}).get('message', response.text[:200])}")
+                        except:
+                            print(f"      요청 형식 오류: {response.text[:200]}")
+                    
+            except Exception as e:
+                print(f"   ❌ Routes API ({api_mode}) 예외: {e}")
+                continue
     
     print(f"   📊 최종 결과: 도보 {result['walking']['time_min']}분, 차량 {result['driving']['time_min']}분, 대중교통 {result['transit']['time_min']}분")
     return result

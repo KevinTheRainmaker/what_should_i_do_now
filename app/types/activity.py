@@ -77,8 +77,8 @@ class ActivityItem(BaseModel):
     walking_time_min: Optional[int] = None
     driving_time_min: Optional[int] = None
     transit_time_min: Optional[int] = None
-    expected_wait_min: Optional[int] = None
-    expected_duration_min: Optional[int] = None
+    # expected_wait_min: Optional[int] = None
+    # expected_duration_min: Optional[int] = None
     budget_hint: PriceLevel
     theme_tags: List[str] = []
     source_url: Optional[str] = None
@@ -93,7 +93,7 @@ class ActivityItem(BaseModel):
     time_fitness_score: Optional[float] = None
     
     # LLM 평가 필드들 (선택사항)
-    llm_score: Optional[float] = None
+    # llm_score: Optional[float] = None
     llm_reason: Optional[str] = None  
     llm_recommendation: Optional[str] = None
     
@@ -121,7 +121,7 @@ class Weather(BaseModel):
 
 
 class Context(BaseModel):
-    location_label: str = "Plaça de Catalunya"
-    coords: Coordinates = Coordinates(lat=41.387, lng=2.170)
+    location_label: str = "International Barcelona Convention Center"
+    coords: Coordinates = Coordinates(lat=41.4095, lng=2.2184)
     weather: Weather = Weather()
     local_time_iso: str

@@ -57,6 +57,8 @@ async def generate_llm_optimized_queries(preferences: Preferences, context: Cont
 - "restaurant near {location}" (현재 위치 기준)
 - "quiet spot near {location}" (현재 위치 기준)
 
+**중요: 반드시 유효한 JSON 형식으로만 응답하세요. 마크다운 코드 블록이나 추가 설명 없이 순수 JSON만 반환하세요.**
+
 다음 JSON 형식으로 응답해주세요:
 {{
   "queries": [
@@ -69,7 +71,8 @@ async def generate_llm_optimized_queries(preferences: Preferences, context: Cont
 - 조용한 카페: "quiet cafe near {location}", "cafeteria tranquila cerca de {location}"
 - 공원: "park near {location}", "parque cerca de {location}"
 - 전망대: "viewpoint near {location}", "mirador cerca de {location}"
-"""
+
+JSON 응답만 반환하세요."""
 
         response = await asyncio.wait_for(
             client.chat.completions.create(
@@ -87,12 +90,25 @@ async def generate_llm_optimized_queries(preferences: Preferences, context: Cont
         result = response.choices[0].message.content.strip()
         print(f"   🤖 LLM 쿼리 생성 응답: {result[:200]}...")
         
-        # JSON 파싱
+        # JSON 파싱 (마크다운 코드 블록 제거)
         try:
+            # 마크다운 코드 블록 제거
+            if "```json" in result:
+                result = result.split("```json")[1].split("```")[0].strip()
+            elif "```" in result:
+                result = result.split("```")[1].split("```")[0].strip()
+            
             query_data = json.loads(result)
             queries = []
             
+            if not isinstance(query_data, dict) or "queries" not in query_data:
+                print(f"   ❌ LLM 응답 형식 오류: 'queries' 키가 없습니다. 응답: {result[:300]}")
+                return []
+            
             for item in query_data.get("queries", []):
+                if not isinstance(item, dict):
+                    continue
+                    
                 query_text = item.get("query", "")
                 language = item.get("language", "en")
                 explanation = item.get("explanation", "")
@@ -106,16 +122,27 @@ async def generate_llm_optimized_queries(preferences: Preferences, context: Cont
                         radius_meters=radius
                     ))
                     print(f"   📝 생성된 쿼리 ({language}): {query_text}")
-                    print(f"      💭 이유: {explanation}")
+                    if explanation:
+                        print(f"      💭 이유: {explanation}")
+            
+            if not queries:
+                print(f"   ⚠️ LLM 응답에서 유효한 쿼리를 찾을 수 없습니다. 응답: {result[:300]}")
             
             return queries[:6]  # 최대 6개로 제한
             
         except json.JSONDecodeError as e:
             print(f"   ❌ LLM 응답 JSON 파싱 실패: {e}")
+            print(f"   📄 원본 응답: {result[:500]}")
             return []
             
+    except asyncio.TimeoutError:
+        print(f"   ❌ LLM 쿼리 생성 timeout (10초 초과)")
+        return []
     except Exception as e:
-        print(f"   ❌ LLM 쿼리 생성 실패: {e}")
+        print(f"   ❌ LLM 쿼리 생성 실패: {type(e).__name__}: {e}")
+        import traceback
+        print(f"   📄 상세 오류:")
+        traceback.print_exc()
         return []
 
 def generate_search_queries(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -163,8 +190,12 @@ def generate_search_queries(state: Dict[str, Any]) -> Dict[str, Any]:
         else:
             print("⚠️ LLM 쿼리 생성 결과 없음")
             
+    except concurrent.futures.TimeoutError:
+        print(f"❌ LLM 쿼리 생성 timeout (12초 초과)")
     except Exception as e:
-        print(f"❌ LLM 쿼리 생성 실패: {e}")
+        print(f"❌ LLM 쿼리 생성 실패: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
     
     # 2. 기본 테마별 쿼리로 보완 (LLM이 실패하거나 부족할 때)
     if len(queries) < 3:

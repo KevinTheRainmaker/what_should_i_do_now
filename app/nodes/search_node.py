@@ -30,7 +30,7 @@ async def search_and_normalize(state: Dict[str, Any]) -> Dict[str, Any]:
     if serpapi_queries:
         logger.info(f"SerpAPI 요청 {len(serpapi_queries)}개 병렬 실행 중...")
         shared_client = httpx.AsyncClient(
-            timeout=1.8,
+            timeout=15.0,  # 타임아웃을 15초로 증가
             limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
         )
         try:
@@ -40,10 +40,14 @@ async def search_and_normalize(state: Dict[str, Any]) -> Dict[str, Any]:
             ]
             serpapi_results = await asyncio.gather(*serpapi_tasks, return_exceptions=True)
             serpapi_count = 0
-            for result in serpapi_results:
+            for i, result in enumerate(serpapi_results, 1):
                 if isinstance(result, list):
                     all_results.extend(result)
                     serpapi_count += len(result)
+                elif isinstance(result, Exception):
+                    logger.error(f"SerpAPI 검색 {i}번 실패: {type(result).__name__}: {result}")
+                else:
+                    logger.warning(f"SerpAPI 검색 {i}번 예상치 못한 결과 타입: {type(result)}")
             logger.info(f"SerpAPI 결과: {serpapi_count}개")
         finally:
             try:
@@ -78,7 +82,7 @@ async def search_and_normalize(state: Dict[str, Any]) -> Dict[str, Any]:
     state["activity_items"] = normalized_items
     state["source_stats"] = {
         "serpapi": len([r for r in all_results if r.get("source") == "serpapi"]),
-        "bing": len([r for r in all_results if r.get("source") == "bing"])
+        # "bing": len([r for r in all_results if r.get("source") == "bing"])
     }
     
     logger.info(f"정규화 완료: {len(normalized_items)}개 활동 아이템 생성\n")
@@ -88,7 +92,7 @@ async def search_and_normalize(state: Dict[str, Any]) -> Dict[str, Any]:
 async def search_serpapi(query: QuerySpec) -> List[Dict[str, Any]]:
     """SerpAPI 검색 (독립 실행용 - 호환성 유지)"""
     async with httpx.AsyncClient(
-        timeout=1.8,
+        timeout=15.0,  # 타임아웃을 15초로 증가
         limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
     ) as client:
         return await search_serpapi_with_client(query, client)
@@ -122,26 +126,55 @@ async def search_serpapi_with_client(query: QuerySpec, client: httpx.AsyncClient
     
     try:
         response = await client.get("https://serpapi.com/search.json", params=params)
+        
+        if response.status_code != 200:
+            logger.error(f"SerpAPI HTTP 오류: {response.status_code} - {response.text[:200]}")
+            return []
+        
         data = response.json()
+        
+        # 에러 응답 확인
+        if "error" in data:
+            logger.error(f"SerpAPI API 오류: {data.get('error', 'Unknown error')}")
+            return []
+        
         results = []
         places = data.get("local_results", [])[:10]
         
+        if not places:
+            logger.warning(f"SerpAPI 검색 결과 없음: '{query.q}'")
+            # 다른 키에서도 시도
+            places = data.get("place_results", []) or data.get("places_results", [])
+            if isinstance(places, dict):
+                places = [places]
+        
         for place in places:
-            results.append({
-                "source": "serpapi",
-                "title": place.get("title", ""),
-                "rating": place.get("rating"),
-                "reviews": place.get("reviews"),
-                "type": place.get("type", ""),
-                "gps_coordinates": place.get("gps_coordinates"),
-                "open_state": place.get("open_state"),
-                "address": place.get("address", ""),
-                "description": place.get("description", "")
-            })
+            if isinstance(place, dict):
+                results.append({
+                    "source": "serpapi",
+                    "title": place.get("title", ""),
+                    "rating": place.get("rating"),
+                    "reviews": place.get("reviews"),
+                    "type": place.get("type", ""),
+                    "gps_coordinates": place.get("gps_coordinates"),
+                    "open_state": place.get("open_state"),
+                    "address": place.get("address", ""),
+                    "description": place.get("description", "")
+                })
+        
+        logger.info(f"SerpAPI 검색 성공: '{query.q}' → {len(results)}개 결과")
         return results
         
+    except httpx.TimeoutException as e:
+        logger.error(f"SerpAPI 타임아웃: '{query.q}' - {e}")
+        return []
+    except httpx.RequestError as e:
+        logger.error(f"SerpAPI 요청 오류: '{query.q}' - {e}")
+        return []
     except Exception as e:
-        print(f"SerpAPI error: {e}")
+        logger.error(f"SerpAPI 오류: '{query.q}' - {type(e).__name__}: {e}")
+        import traceback
+        logger.debug(f"상세 오류: {traceback.format_exc()}")
         return []
 
 async def get_place_details_from_google(place_name: str, current_location: str) -> Dict[str, Any]:
@@ -302,7 +335,8 @@ async def normalize_search_result(raw_item: Dict[str, Any]) -> ActivityItem:
         ),
         reason_text="",  # 랭커에서 생성
         directions_link=generate_directions_link(coords, title),
-        place_id=place_id
+        place_id=place_id,
+        budget_hint=price_level  # price_level과 동일하게 설정
     )
 
 def extract_theme_tags(text: str, category: CategoryType) -> List[str]:
